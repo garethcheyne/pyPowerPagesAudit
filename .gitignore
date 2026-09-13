@@ -1,0 +1,14 @@
+# Live credentials and environment-specific targets — never commit.
+.env
+instances.yaml
+!sample_instances.yaml
+!sample .env
+
+# Audit output contains extracted configuration and findings.
+reports/
+*.md.pdf
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/

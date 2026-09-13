@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Power Pages Audit</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;
+         margin: 0; padding: 24px; background: #f6f7f9; color: #1a1d21; }
+  @media (prefers-color-scheme: dark) {
+    body { background:#15171a; color:#e6e8ea; }
+    table { background:#1e2126 !important; }
+    td, th { border-color:#2c3036 !important; }
+    code { background:#2a2e34 !important; }
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .meta { color: #6b7280; font-size: 13px; margin-bottom: 16px; }
+  .chips { margin-bottom: 20px; }
+  .chip { display:inline-block; color:#fff; padding:3px 10px; border-radius:12px;
+           font-size:12px; font-weight:600; margin-right:6px; }
+  table { border-collapse: collapse; width: 100%; background:#fff;
+           border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  th { text-align:left; font-size:12px; text-transform:uppercase; letter-spacing:.04em;
+        color:#6b7280; padding:10px 14px; border-bottom:2px solid #e5e7eb; }
+  td { padding:12px 14px; border-bottom:1px solid #eceef1; vertical-align:top; }
+  .sev { color:#fff; padding:2px 9px; border-radius:10px; font-size:12px; font-weight:600;
+          white-space:nowrap; }
+  .det { color:#4b5563; font-size:13px; margin-top:5px; }
+  .ev { margin:6px 0 0; padding-left:18px; font-size:12.5px; color:#4b5563; }
+  code { background:#f0f1f3; padding:1px 5px; border-radius:4px; font-size:12.5px; }
+  .src { color:#9aa0a6; font-size:12px; white-space:nowrap; }
+</style></head><body>
+<h1>Power Pages exposure audit</h1>
+<div class="meta">Target: <code>https://contoso.crm.dynamics.com</code> &middot; 2026-09-11T07:46:40.396192+00:00</div>
+<div class="chips"><span class='chip' style='background:#b3123a'>Critical: 1</span><span class='chip' style='background:#d1493b'>High: 1</span><span class='chip' style='background:#3f7cac'>Low: 1</span><span class='chip' style='background:#5b6470'>Info: 4</span></div>
+<table>
+  <thead><tr><th>Severity</th><th>Finding</th><th>Table</th><th>Source</th></tr></thead>
+  <tbody>
+<tr><td><span class='sev' style='background:#b3123a'>Critical</span></td><td>Anonymous READ permission (Global)<div class=det>Table permission &#x27;Anon contacts&#x27; grants READ with GLOBAL scope to anonymous web role(s): Anonymous Users. Global scope means every row, not just a signed-in user&#x27;s own records. Any unauthenticated visitor can read the entire table. Web API is enabled for this table, so it is directly queryable at /_api/contacts (fields: *).</div><ul class='ev'><li><code>permission</code>: Anon contacts</li><li><code>scope</code>: Global</li><li><code>privileges</code>: read</li><li><code>roles</code>: Anonymous Users</li><li><code>webapi_enabled</code>: True</li></ul></td><td><code>contact</code></td><td class='src'>dataverse</td></tr>
+<tr><td><span class='sev' style='background:#d1493b'>High</span></td><td>External leak tied to a configured permission<div class=det>The anonymous scanner read &#x27;contacts&#x27; externally, and the Dataverse config explains it:<br>Anon contacts (read=True, scope=Global, roles=Anonymous Users)</div><ul class='ev'><li><code>root_cause_permissions</code>: 1</li></ul></td><td><code>contacts</code></td><td class='src'>correlation</td></tr>
+<tr><td><span class='sev' style='background:#3f7cac'>Low</span></td><td>Anonymous READ permission (Self)<div class=det>Table permission &#x27;Self account&#x27; grants READ to anonymous role(s) Anonymous Users but with Self scope. Scoped permissions resolve against the signed-in contact/account, which an anonymous visitor lacks, so this usually returns nothing — but review it: misuse of scope is a common misconfiguration.</div><ul class='ev'><li><code>permission</code>: Self account</li><li><code>scope</code>: Self</li><li><code>privileges</code>: read</li><li><code>roles</code>: Anonymous Users</li><li><code>webapi_enabled</code>: True</li></ul></td><td><code>account</code></td><td class='src'>dataverse</td></tr>
+<tr><td><span class='sev' style='background:#5b6470'>Info</span></td><td>Table permissions enumerated<div class=det>2 table permission record(s).</div><ul class='ev'><li><code>permissions</code>: 2</li></ul></td><td><code></code></td><td class='src'>dataverse</td></tr>
+<tr><td><span class='sev' style='background:#5b6470'>Info</span></td><td>Web API site settings enumerated<div class=det>2 table(s) have Webapi/&lt;entity&gt;/enabled = true.</div><ul class='ev'><li><code>webapi_enabled_tables</code>: 2</li></ul></td><td><code></code></td><td class='src'>dataverse</td></tr>
+<tr><td><span class='sev' style='background:#5b6470'>Info</span></td><td>Web roles enumerated<div class=det>2 web role(s); 1 anonymous, 1 authenticated.</div><ul class='ev'><li><code>roles</code>: 2</li></ul></td><td><code></code></td><td class='src'>dataverse</td></tr>
+<tr><td><span class='sev' style='background:#5b6470'>Info</span></td><td>Web API enabled for table<div class=det>Webapi enabled; no anonymous global-read permission found for it. Confirm the protecting table permission is correctly scoped.</div><ul class='ev'><li><code>fields</code>: (default)</li></ul></td><td><code>account</code></td><td class='src'>dataverse</td></tr>
+  </tbody>
+</table>
+</body></html>

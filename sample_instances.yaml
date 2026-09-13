@@ -1,0 +1,15 @@
+# One entry per environment to audit. Copy to instances.yaml and edit.
+instances:
+  - name: Development Portal
+    dataverse_url: https://{your_org_name}.crm.dynamics.com/
+    portal_url: https://{your_portal_name}.powerappsportals.com
+  - name: Production Portal
+    dataverse_url: https://{your_org_name}.crm.dynamics.com/
+    portal_url: https://{your_portal_name}.powerappsportals.com
+    # website: optional, restricts the audit to matching website names
+
+# Resolved from the environment or a .env beside this file, so this file is
+# safe to commit.
+tenant_id: ${tenant_id}
+client_id: ${client_id}
+client_secret: ${client_secret}
