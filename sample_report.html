@@ -1,47 +1,476 @@
 <!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8">
+<html lang="en"><head>
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Power Pages Audit</title>
+<title>Contoso (Sample) — Power Pages exposure audit</title>
 <style>
-  :root { color-scheme: light dark; }
-  body { font: 15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;
-         margin: 0; padding: 24px; background: #f6f7f9; color: #1a1d21; }
-  @media (prefers-color-scheme: dark) {
-    body { background:#15171a; color:#e6e8ea; }
-    table { background:#1e2126 !important; }
-    td, th { border-color:#2c3036 !important; }
-    code { background:#2a2e34 !important; }
+:root {
+  color-scheme: light;
+  /* Fluent 2 - neutral ramp (web light theme) */
+  --bg-canvas: #f5f5f5;
+  --bg-surface: #ffffff;
+  --bg-subtle: #fafafa;
+  --bg-muted: #f0f0f0;
+  --fg-1: #242424;
+  --fg-2: #424242;
+  --fg-3: #616161;
+  --stroke-1: #d1d1d1;
+  --stroke-2: #e0e0e0;
+  /* Fluent 2 - brand ramp */
+  --brand-70: #115ea3;
+  --brand-80: #0f6cbd;
+  --brand-100: #479ef5;
+  --brand-160: #ebf3fc;
+  --brand-shade: #0c3b5e;
+  /* Fluent 2 - status palette */
+  --sev-critical: #bc2f32;
+  --sev-critical-bg: #fdf3f4;
+  --sev-critical-stroke: #f1bbbc;
+  --sev-high: #c43501;
+  --sev-high-bg: #fdf6f3;
+  --sev-high-stroke: #f4bfab;
+  --sev-medium: #835b00;
+  --sev-medium-bg: #fdf9f0;
+  --sev-medium-stroke: #f0d3a0;
+  --sev-low: #0f6cbd;
+  --sev-low-bg: #ebf3fc;
+  --sev-low-stroke: #b4d6fa;
+  --sev-info: #616161;
+  --sev-info-bg: #f5f5f5;
+  --sev-info-stroke: #e0e0e0;
+  --ok: #0e700e;
+  /* Fluent 2 - radius, shadow, type */
+  --r-md: 4px;
+  --r-lg: 6px;
+  --r-xl: 8px;
+  --r-circular: 9999px;
+  --shadow-2: 0 1px 2px rgba(0,0,0,.14), 0 0 2px rgba(0,0,0,.12);
+  --shadow-4: 0 2px 4px rgba(0,0,0,.14), 0 0 2px rgba(0,0,0,.12);
+  --shadow-16: 0 8px 16px rgba(0,0,0,.14), 0 0 2px rgba(0,0,0,.12);
+  --font: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont,
+          Roboto, "Helvetica Neue", sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI Variable Text", "Segoe UI",
+          -apple-system, sans-serif;
+  --mono: Consolas, "Cascadia Code", "Courier New", monospace;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg-canvas); color: var(--fg-1);
+  font-family: var(--font); font-size: 14px; line-height: 20px;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--brand-80); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* --- hero: Power Platform maker-portal masthead ------------------------- */
+.hero {
+  background:
+    radial-gradient(1200px 400px at 12% -40%, rgba(71,158,245,.45), transparent 60%),
+    linear-gradient(120deg, #0b2a4a 0%, #115ea3 45%, #7a3fa8 100%);
+  color: #fff; padding: 28px 32px 24px;
+}
+.hero-top { display: flex; align-items: center; gap: 18px; margin-bottom: 10px; }
+.logo { width: 52px; height: 52px; flex: none;
+        filter: drop-shadow(0 2px 6px rgba(0,0,0,.35)); }
+.hero-titles { min-width: 0; }
+.hero-verdict {
+  margin-left: auto; text-align: center; flex: none;
+  background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.28);
+  border-radius: var(--r-lg); padding: 8px 18px; backdrop-filter: blur(2px);
+}
+.hero-verdict-value { display: block; font-family: var(--font-display);
+                      font-size: 26px; line-height: 30px; font-weight: 600; }
+.hero-verdict-label { display: block; font-size: 11px; font-weight: 600;
+                      text-transform: uppercase; letter-spacing: .06em; opacity: .9; }
+.eyebrow {
+  text-transform: uppercase; letter-spacing: .08em; font-size: 12px;
+  font-weight: 600; opacity: .82; margin-bottom: 2px;
+}
+.hero h1 {
+  font-family: var(--font-display); font-size: 28px; line-height: 36px;
+  font-weight: 600; margin: 0;
+}
+.lede { margin: 0 0 20px; font-size: 15px; line-height: 21px; opacity: .9;
+        max-width: 78ch; color: #fff; }
+/* Grid rather than wrap: ragged columns make the masthead look accidental. */
+.meta { display: grid; gap: 14px 32px; margin: 0;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.meta-item { min-width: 0; }
+.meta-item dt {
+  font-size: 11px; line-height: 15px; text-transform: uppercase;
+  letter-spacing: .06em; opacity: .7; font-weight: 600;
+}
+.meta-item dd { margin: 3px 0 0; font-size: 14px; line-height: 19px;
+                overflow-wrap: anywhere; }
+.meta a, .meta code { color: #fff; }
+.meta code { background: rgba(255,255,255,.16); }
+.meta time { border-bottom: 1px dotted rgba(255,255,255,.45); cursor: help; }
+
+/* --- tabs --------------------------------------------------------------- */
+.tabs {
+  position: sticky; top: 0; z-index: 5;
+  background: var(--bg-surface); border-bottom: 1px solid var(--stroke-2);
+  padding: 0 32px; display: flex; gap: 2px; overflow-x: auto;
+  box-shadow: var(--shadow-2);
+}
+.tab {
+  appearance: none; background: none; border: 0; cursor: pointer;
+  font-family: inherit; font-size: 14px; font-weight: 600; color: var(--fg-2);
+  padding: 12px 16px 10px; white-space: nowrap; display: flex; align-items: center;
+  gap: 8px; border-bottom: 2px solid transparent; border-radius: var(--r-md) var(--r-md) 0 0;
+}
+.tab:hover { background: var(--bg-subtle); color: var(--fg-1); }
+.tab:focus-visible { outline: 2px solid var(--brand-80); outline-offset: -2px; }
+.tab[aria-selected="true"] { color: var(--brand-70); border-bottom-color: var(--brand-80); }
+.tab-count {
+  font-size: 11px; font-weight: 700; background: var(--sev-critical-bg);
+  color: var(--sev-critical); border: 1px solid var(--sev-critical-stroke);
+  border-radius: var(--r-circular); padding: 0 7px; line-height: 17px;
+}
+.panel[hidden] { display: none; }
+
+/* --- documentation links ------------------------------------------------- */
+.docs {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--stroke-2);
+}
+.docs-label {
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--fg-3); margin-right: 2px;
+}
+.doc {
+  font-size: 12px; font-weight: 600; padding: 2px 10px;
+  background: var(--brand-160); color: var(--brand-70);
+  border: 1px solid var(--sev-low-stroke); border-radius: var(--r-circular);
+}
+.doc:hover { background: var(--sev-low-bg); text-decoration: none;
+             border-color: var(--brand-80); }
+.doc::after { content: " \2197" / ""; font-weight: 400; }
+.doc-list { list-style: none; margin: 0; padding: 0;
+            display: grid; gap: 8px;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+.doc-list li {
+  border: 1px solid var(--stroke-2); border-radius: var(--r-lg);
+  padding: 10px 14px; background: var(--bg-subtle);
+}
+.doc-list a { font-weight: 600; display: block; }
+.doc-url { display: block; font-size: 11px; color: var(--fg-3);
+           font-family: var(--mono); word-break: break-all; margin-top: 2px; }
+
+/* --- layout ------------------------------------------------------------- */
+main { max-width: none; margin: 0; padding: 24px 32px 64px; }
+.card {
+  background: var(--bg-surface); border: 1px solid var(--stroke-2);
+  border-radius: var(--r-xl); box-shadow: var(--shadow-2);
+  padding: 24px; margin-bottom: 20px; scroll-margin-top: 60px;
+}
+h2 {
+  font-family: var(--font-display); font-size: 20px; line-height: 28px;
+  font-weight: 600; margin: 0 0 12px;
+}
+h3 { font-size: 16px; line-height: 22px; font-weight: 600; margin: 24px 0 10px; }
+h4 { font-size: 14px; line-height: 20px; font-weight: 600; margin: 20px 0 8px;
+     color: var(--fg-2); }
+p { margin: 0 0 12px; color: var(--fg-2); max-width: 90ch; }
+.muted { color: var(--fg-3); }
+.empty { color: var(--fg-3); font-style: italic; }
+
+/* --- stats -------------------------------------------------------------- */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+         gap: 12px; margin-bottom: 8px; }
+.stat {
+  border: 1px solid var(--stroke-2); border-radius: var(--r-lg);
+  border-top: 3px solid currentColor; padding: 14px 16px; background: var(--bg-subtle);
+}
+.stat.is-zero { opacity: .45; }
+.stat-value { font-family: var(--font-display); font-size: 28px; line-height: 32px;
+              font-weight: 600; color: var(--fg-1); }
+.stat-label { font-size: 12px; line-height: 16px; font-weight: 600;
+              text-transform: uppercase; letter-spacing: .04em; }
+.stat.sev-critical { color: var(--sev-critical); }
+.stat.sev-high     { color: var(--sev-high); }
+.stat.sev-medium   { color: var(--sev-medium); }
+.stat.sev-low      { color: var(--sev-low); }
+.stat.sev-info     { color: var(--sev-info); }
+
+.action-list { list-style: none; margin: 0; padding: 0; }
+.action-list li {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 0; border-bottom: 1px solid var(--stroke-2);
+}
+.action-list li:last-child { border-bottom: 0; }
+.act-title { font-weight: 600; color: var(--fg-1); }
+
+/* --- badges, pills, chips ----------------------------------------------- */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: var(--r-circular);
+  font-size: 12px; line-height: 16px; font-weight: 600; white-space: nowrap;
+  border: 1px solid;
+}
+.badge.sev-critical { color: var(--sev-critical); background: var(--sev-critical-bg);
+                      border-color: var(--sev-critical-stroke); }
+.badge.sev-high     { color: var(--sev-high); background: var(--sev-high-bg);
+                      border-color: var(--sev-high-stroke); }
+.badge.sev-medium   { color: var(--sev-medium); background: var(--sev-medium-bg);
+                      border-color: var(--sev-medium-stroke); }
+.badge.sev-low      { color: var(--sev-low); background: var(--sev-low-bg);
+                      border-color: var(--sev-low-stroke); }
+.badge.sev-info     { color: var(--sev-info); background: var(--sev-info-bg);
+                      border-color: var(--sev-info-stroke); }
+.pill {
+  display: inline-block; padding: 1px 8px; border-radius: var(--r-circular);
+  font-size: 12px; line-height: 16px; font-weight: 600;
+  background: var(--bg-muted); color: var(--fg-2); white-space: nowrap;
+}
+.pill.danger { background: var(--sev-critical-bg); color: var(--sev-critical);
+               border: 1px solid var(--sev-critical-stroke); }
+.flag { font-size: 12px; font-weight: 600; }
+.flag.on { color: var(--sev-critical); }
+.flag.off { color: var(--fg-3); }
+.chipline { display: flex; flex-wrap: wrap; gap: 6px; }
+.count {
+  margin-left: 8px; font-size: 12px; font-weight: 600; color: var(--fg-3);
+  background: var(--bg-muted); border-radius: var(--r-circular); padding: 1px 8px;
+}
+
+/* --- callouts ----------------------------------------------------------- */
+.callout {
+  border-radius: var(--r-md); padding: 12px 14px; margin: 0 0 16px;
+  border-left: 3px solid; font-size: 14px;
+}
+.callout.warn { background: var(--sev-medium-bg); border-color: var(--sev-medium);
+                color: var(--fg-1); }
+
+/* --- tables ------------------------------------------------------------- */
+.grid-wrap { overflow-x: auto; border: 1px solid var(--stroke-2);
+             border-radius: var(--r-lg); margin-bottom: 16px; }
+table.grid { border-collapse: collapse; width: 100%; font-size: 13px; }
+table.grid th {
+  text-align: left; font-size: 12px; line-height: 16px; font-weight: 600;
+  color: var(--fg-3); text-transform: uppercase; letter-spacing: .04em;
+  padding: 10px 12px; background: var(--bg-subtle);
+  border-bottom: 1px solid var(--stroke-1); position: sticky; top: 0;
+}
+table.grid td { padding: 10px 12px; border-bottom: 1px solid var(--stroke-2);
+                vertical-align: top; color: var(--fg-2); }
+table.grid tr:last-child td { border-bottom: 0; }
+table.grid tbody tr:hover { background: var(--bg-subtle); }
+
+code {
+  font-family: var(--mono); font-size: 12px; background: var(--bg-muted);
+  padding: 1px 5px; border-radius: var(--r-md); color: var(--fg-1);
+}
+code.snippet { display: block; max-width: 56ch; white-space: pre-wrap;
+               word-break: break-word; color: var(--fg-3); background: transparent;
+               padding: 0; }
+
+/* --- findings ----------------------------------------------------------- */
+.sev-heading { display: flex; align-items: center; font-size: 16px; margin: 28px 0 12px;
+               padding-bottom: 6px; border-bottom: 2px solid currentColor; }
+.sev-heading.sev-critical { color: var(--sev-critical); }
+.sev-heading.sev-high     { color: var(--sev-high); }
+.sev-heading.sev-medium   { color: var(--sev-medium); }
+.sev-heading.sev-low      { color: var(--sev-low); }
+.sev-heading.sev-info     { color: var(--sev-info); }
+.finding {
+  border: 1px solid var(--stroke-2); border-left: 3px solid; border-radius: var(--r-lg);
+  padding: 14px 16px; margin-bottom: 10px; background: var(--bg-subtle);
+}
+.finding.sev-critical { border-left-color: var(--sev-critical); }
+.finding.sev-high     { border-left-color: var(--sev-high); }
+.finding.sev-medium   { border-left-color: var(--sev-medium); }
+.finding.sev-low      { border-left-color: var(--sev-low); }
+.finding.sev-info     { border-left-color: var(--sev-info); }
+.finding-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+                margin-bottom: 6px; }
+.finding-head h4 { margin: 0; font-size: 15px; color: var(--fg-1); }
+.src { margin-left: auto; font-size: 12px; color: var(--fg-3); font-family: var(--mono); }
+.finding-detail { margin: 0; font-size: 13px; line-height: 19px; }
+.evidence { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px;
+            margin: 10px 0 0; padding: 10px 0 0; border-top: 1px solid var(--stroke-2);
+            font-size: 12px; }
+.ev-row { display: contents; }
+.evidence dt { font-weight: 600; color: var(--fg-3); font-family: var(--mono); }
+.evidence dd { margin: 0; color: var(--fg-2); word-break: break-word; }
+
+/* --- reference disclosure ------------------------------------------------ */
+details.ref { border: 1px solid var(--stroke-2); border-radius: var(--r-lg);
+              margin-bottom: 8px; background: var(--bg-subtle); }
+details.ref > summary {
+  cursor: pointer; padding: 10px 14px; font-weight: 600; list-style: none;
+  display: flex; align-items: center; gap: 8px;
+}
+details.ref > summary::-webkit-details-marker { display: none; }
+details.ref > summary::before { content: "\25B8" / ""; color: var(--fg-3); }
+details.ref[open] > summary::before { content: "\25BE" / ""; }
+details.ref[open] > summary { border-bottom: 1px solid var(--stroke-2); }
+details.ref .grid-wrap { border: 0; margin: 0; border-radius: 0; }
+
+@media print {
+  .tabs { display: none; }
+  .panel[hidden] { display: block !important; }
+  .hero { background: #115ea3 !important; -webkit-print-color-adjust: exact;
+          print-color-adjust: exact; }
+  .card { break-inside: avoid; box-shadow: none; }
+  details.ref[open] { break-inside: avoid; }
+  details.ref:not([open]) > summary::before { content: "\25B8" / ""; }
+}
+@media (max-width: 720px) {
+  .hero { padding: 20px 16px 18px; }
+  .hero h1 { font-size: 22px; line-height: 28px; }
+  .hero-verdict { padding: 6px 12px; }
+  main { padding: 16px; }
+  .card { padding: 16px; }
+  .tabs { padding: 0 8px; }
+  .evidence { grid-template-columns: 1fr; }
+}
+</style>
+</head><body>
+
+<header class="hero">
+  <div class="hero-top">
+    
+<svg class="logo" viewBox="0 0 48 48" role="img" aria-label="Power Pages audit">
+  <defs>
+    <linearGradient id="ppg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#66c2ff"/>
+      <stop offset="55%" stop-color="#3b8ae2"/>
+      <stop offset="100%" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+  <rect x="6" y="3" width="28" height="38" rx="4" fill="url(#ppg)"/>
+  <rect x="12" y="11" width="16" height="2.6" rx="1.3" fill="#fff" opacity=".95"/>
+  <rect x="12" y="17" width="16" height="2.6" rx="1.3" fill="#fff" opacity=".75"/>
+  <rect x="12" y="23" width="10" height="2.6" rx="1.3" fill="#fff" opacity=".55"/>
+  <circle cx="33" cy="32" r="11" fill="#0b2a4a" opacity=".22"/>
+  <circle cx="33" cy="32" r="9.5" fill="none" stroke="#fff" stroke-width="2.2"/>
+  <path d="M23.5 32h19M33 22.5c4.6 5.4 4.6 13.6 0 19M33 22.5c-4.6 5.4-4.6 13.6 0 19"
+        fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/>
+</svg>
+    <div class="hero-titles">
+      <div class="eyebrow">Power Pages &middot; Dataverse exposure audit</div>
+      <h1>Contoso (Sample)</h1>
+    </div>
+    <div class="hero-verdict sev-critical">
+      <span class="hero-verdict-value">2</span>
+      <span class="hero-verdict-label">Critical</span>
+    </div>
+  </div>
+  <p class="lede">What an unauthenticated visitor can reach through this site,
+     and the configuration that allows it. Highest severity: 2 critical findings.</p>
+  <dl class="meta"><div class="meta-item"><dt>Portal</dt><dd><a href="https://www.contoso-example.com" target="_blank" rel="noopener noreferrer">https://www.contoso-example.com</a></dd></div><div class="meta-item"><dt>Dataverse</dt><dd><code>https://contoso.crm.dynamics.com</code></dd></div><div class="meta-item"><dt>Run</dt><dd><time class="ts" datetime="2026-09-14T19:09:43.491668+00:00">15 Sep 2026, 07:09 New Zealand Standard Time</time></dd></div><div class="meta-item"><dt>Configuration model</dt><dd>Standard data model <code>adx_*</code></dd></div><div class="meta-item"><dt>Content sources scanned</dt><dd>3</dd></div></dl>
+</header>
+<nav class="tabs" role="tablist" aria-label="Report sections"><button class="tab" role="tab" id="tab-summary" aria-controls="panel-summary" aria-selected="true" tabindex="0" data-panel="summary">Summary</button><button class="tab" role="tab" id="tab-anonymous" aria-controls="panel-anonymous" aria-selected="false" tabindex="-1" data-panel="anonymous">Anonymous access</button><button class="tab" role="tab" id="tab-rendered" aria-controls="panel-rendered" aria-selected="false" tabindex="-1" data-panel="rendered">Where rendered</button><button class="tab" role="tab" id="tab-findings" aria-controls="panel-findings" aria-selected="false" tabindex="-1" data-panel="findings">Findings<span class="tab-count">3</span></button><button class="tab" role="tab" id="tab-configuration" aria-controls="panel-configuration" aria-selected="false" tabindex="-1" data-panel="configuration">Configuration</button><button class="tab" role="tab" id="tab-documentation" aria-controls="panel-documentation" aria-selected="false" tabindex="-1" data-panel="documentation">Documentation</button></nav>
+<main>
+<div class="panel" role="tabpanel" id="panel-summary" aria-labelledby="tab-summary">
+<section id="summary" class="card">
+  <h2>Summary</h2>
+  <div class="stats"><div class="stat sev-critical"><div class="stat-value">2</div><div class="stat-label">Critical</div></div><div class="stat sev-high"><div class="stat-value">1</div><div class="stat-label">High</div></div><div class="stat sev-medium is-zero"><div class="stat-value">0</div><div class="stat-label">Medium</div></div><div class="stat sev-low"><div class="stat-value">1</div><div class="stat-label">Low</div></div><div class="stat sev-info"><div class="stat-value">1</div><div class="stat-label">Info</div></div></div>
+  <h3>Requiring action</h3>
+  <ul class="action-list"><li><span class="badge sev-critical">Critical</span> <span class="act-title">Anonymous global read of a table</span> <code>contact</code></li><li><span class="badge sev-critical">Critical</span> <span class="act-title">Unprotected page renders anonymously-readable data</span> <code>contact</code></li><li><span class="badge sev-high">High</span> <span class="act-title">Entity list publishes an OData feed</span> <code>incident</code></li></ul>
+</section></div><div class="panel" role="tabpanel" id="panel-anonymous" aria-labelledby="tab-anonymous" hidden>
+<section id="anonymous" class="card">
+  <h2>Anonymous access</h2>
+  <p>Everything bound to a web role flagged as the <strong>Anonymous Users role</strong>
+     is reachable by anyone on the internet, with no sign-in. <code>Global</code> scope
+     means every row; <code>Contact</code>/<code>Account</code>/<code>Self</code>/<code>Parent</code>
+     resolve against the signed-in contact, which an anonymous visitor does not have.</p>
+  <div class="callout warn"><strong>Personal-data columns reachable anonymously:</strong> <code>emailaddress1</code> <code>firstname</code></div>
+  <div class="grid-wrap"><table class="grid"><thead><tr><th>Table</th><th>Permission</th><th>Scope</th><th>Privileges</th><th>Web API</th><th>Columns reachable</th></tr></thead><tbody><tr><td><code>contact</code></td><td><a href="https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_entitypermission&amp;id=perm-contacts" target="_blank" rel="noopener noreferrer" title="Open this table permission in Dataverse">contacts</a></td><td><span class="pill danger">Global</span></td><td>Read</td><td><span class="flag on">Yes</span></td><td><span class="muted">emailaddress1, firstname</span></td></tr><tr><td><code>product</code></td><td><a href="https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_entitypermission&amp;id=perm-products" target="_blank" rel="noopener noreferrer" title="Open this table permission in Dataverse">products</a></td><td><span class="pill danger">Global</span></td><td>Read</td><td><span class="flag off">No</span></td><td><span class="muted">(no Web API site setting; exposure depends on another channel)</span></td></tr></tbody></table></div>
+</section></div><div class="panel" role="tabpanel" id="panel-rendered" aria-labelledby="tab-rendered" hidden>
+<section id="rendered" class="card">
+  <h2>Where the data is rendered</h2>
+  <p>Found by scanning the site's Liquid web templates, web page copy and scripts,
+     content snippets and entity list FetchXML. Where the Web API is off, the page
+     is the only channel, so the page is what bounds the exposure.</p>
+  <p><strong>Portal</strong> opens the live page to see what it actually returns.
+     <strong>Dataverse</strong> opens the record that holds the Liquid or FetchXML,
+     which is what you edit to change it.</p>
+  <details class="ref"><summary><code>contact</code><span class="count">2 reference(s)</span></summary><div class="grid-wrap"><table class="grid"><thead><tr><th>Source</th><th>Portal</th><th>Dataverse</th><th>How</th><th>Columns</th><th>Source excerpt</th></tr></thead><tbody><tr><td>Web page copy — Child</td><td><a href="https://www.contoso-example.com/members/detail" target="_blank" rel="noopener noreferrer" title="Open the live page on the portal">View page</a></td><td><a href="https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_webpage&amp;id=page-child" target="_blank" rel="noopener noreferrer" title="Open the Dataverse record holding this content">Edit record</a></td><td><span class="muted">FetchXML &lt;entity&gt;, line 1</span></td><td><code>emailaddress1</code></td><td><code class="snippet">{% fetchxml q %}&lt;fetch&gt;&lt;entity name=&quot;contact&quot;&gt;&lt;attribute name=&quot;emailaddress1&quot; /&gt;&lt;/entity&gt;&lt;/fetch&gt;{%…</code></td></tr><tr><td>Web page copy — Public API</td><td><a href="https://www.contoso-example.com/api" target="_blank" rel="noopener noreferrer" title="Open the live page on the portal">View page</a></td><td><a href="https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_webpage&amp;id=page-pub" target="_blank" rel="noopener noreferrer" title="Open the Dataverse record holding this content">Edit record</a></td><td><span class="muted">FetchXML &lt;entity&gt;, line 1</span></td><td><code>emailaddress1</code></td><td><code class="snippet">{% fetchxml q %}&lt;fetch&gt;&lt;entity name=&quot;contact&quot;&gt;&lt;attribute name=&quot;emailaddress1&quot; /&gt;&lt;/entity&gt;&lt;/fetch&gt;{%…</code></td></tr></tbody></table></div></details>
+</section></div><div class="panel" role="tabpanel" id="panel-findings" aria-labelledby="tab-findings" hidden>
+<section id="findings" class="card">
+  <h2>Findings</h2>
+  <h3 class="sev-heading sev-critical">Critical<span class="count">2</span></h3><article class="finding sev-critical"><div class="finding-head"><span class="badge sev-critical">Critical</span><h4>Anonymous global read of a table</h4><code>contact</code><span class="src">dataverse:adx</span></div><p class="finding-detail">Table permission &#x27;contacts&#x27; grants READ with GLOBAL scope on &#x27;contact&#x27; to anonymous web role(s) Anonymous. Global scope means every row, not just a signed-in contact&#x27;s own records. The Web API is enabled for this table, so a visitor can compose their own query at /_api/contacts with fields = emailaddress1,firstname — filtering, paging and column selection are all under their control, not the site&#x27;s. Referenced by Web page copy &#x27;Child&#x27;; Web page copy &#x27;Public API&#x27;. Inspect: <a href="https://www.contoso-example.com/api" target="_blank" rel="noopener noreferrer">https://www.contoso-example.com/api</a>, <a href="https://www.contoso-example.com/members/detail" target="_blank" rel="noopener noreferrer">https://www.contoso-example.com/members/detail</a> A visitor can query every row of a table holding personal data. Remove the Global scope or the anonymous binding now. Columns reachable: emailaddress1, firstname. Columns matching personal-data patterns are included: emailaddress1, firstname.</p><dl class="evidence"><div class="ev-row"><dt>permission</dt><dd>contacts</dd></div><div class="ev-row"><dt>scope</dt><dd>Global</dd></div><div class="ev-row"><dt>roles</dt><dd>Anonymous</dd></div><div class="ev-row"><dt>website</dt><dd>contoso.example</dd></div><div class="ev-row"><dt>channel</dt><dd>queryable</dd></div><div class="ev-row"><dt>config_record</dt><dd><a href="https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_entitypermission&amp;id=perm-contacts" target="_blank" rel="noopener noreferrer">https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_entitypermission&amp;id=perm-contacts</a></dd></div><div class="ev-row"><dt>webapi_enabled</dt><dd>True</dd></div><div class="ev-row"><dt>webapi_fields</dt><dd>emailaddress1,firstname</dd></div><div class="ev-row"><dt>rendered_at</dt><dd><a href="https://www.contoso-example.com/api" target="_blank" rel="noopener noreferrer">https://www.contoso-example.com/api</a>, <a href="https://www.contoso-example.com/members/detail" target="_blank" rel="noopener noreferrer">https://www.contoso-example.com/members/detail</a></dd></div><div class="ev-row"><dt>rendered_by_record</dt><dd><a href="https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_webpage&amp;id=page-child" target="_blank" rel="noopener noreferrer">https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_webpage&amp;id=page-child</a>, <a href="https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_webpage&amp;id=page-pub" target="_blank" rel="noopener noreferrer">https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_webpage&amp;id=page-pub</a></dd></div><div class="ev-row"><dt>referenced_by</dt><dd>Web page copy: Child; Web page copy: Public API</dd></div><div class="ev-row"><dt>column_profiles</dt><dd>(none)</dd></div><div class="ev-row"><dt>sensitive_columns</dt><dd>emailaddress1, firstname</dd></div><div class="ev-row"><dt>sensitive_table</dt><dd>True</dd></div></dl><div class="docs"><span class="docs-label">How to fix</span><a class="doc" href="https://learn.microsoft.com/power-pages/security/table-permissions#available-access-types" target="_blank" rel="noopener noreferrer">Table permission access types (scope)</a><a class="doc" href="https://learn.microsoft.com/power-pages/getting-started/tutorial-display-data-securely" target="_blank" rel="noopener noreferrer">Tutorial: display data securely</a><a class="doc" href="https://learn.microsoft.com/power-pages/security/security-best-practices" target="_blank" rel="noopener noreferrer">Power Pages security best practices</a></div></article><article class="finding sev-critical"><div class="finding-head"><span class="badge sev-critical">Critical</span><h4>Unprotected page renders anonymously-readable data</h4><code>contact</code><span class="src">dataverse:adx</span></div><p class="finding-detail">&#x27;<a href="https://www.contoso-example.com/api" target="_blank" rel="noopener noreferrer">https://www.contoso-example.com/api</a>&#x27; renders &#x27;contact&#x27; via FetchXML &lt;entity&gt; (line 1), no web page access control rule covers it (its own or any ancestor&#x27;s), and an anonymous table permission allows the read. Nothing between the public internet and this data is doing any filtering except the page&#x27;s own query. Columns matching personal-data patterns appear in the same query block: emailaddress1. Open the URL to confirm what it returns unauthenticated, then either add a page permission or narrow the permission behind it.</p><dl class="evidence"><div class="ev-row"><dt>url</dt><dd><a href="https://www.contoso-example.com/api" target="_blank" rel="noopener noreferrer">https://www.contoso-example.com/api</a></dd></div><div class="ev-row"><dt>page</dt><dd>Public API</dd></div><div class="ev-row"><dt>occurrences</dt><dd>1</dd></div><div class="ev-row"><dt>page_record</dt><dd><a href="https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_webpage&amp;id=page-pub" target="_blank" rel="noopener noreferrer">https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_webpage&amp;id=page-pub</a></dd></div><div class="ev-row"><dt>content_record</dt><dd><a href="https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_webpage&amp;id=page-pub" target="_blank" rel="noopener noreferrer">https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_webpage&amp;id=page-pub</a></dd></div><div class="ev-row"><dt>how</dt><dd>FetchXML &lt;entity&gt; (line 1)</dd></div><div class="ev-row"><dt>sensitive_columns</dt><dd>emailaddress1</dd></div><div class="ev-row"><dt>page_permission</dt><dd>none (inherited rules checked)</dd></div></dl></article><h3 class="sev-heading sev-high">High<span class="count">1</span></h3><article class="finding sev-high"><div class="finding-head"><span class="badge sev-high">High</span><h4>Entity list publishes an OData feed</h4><code>incident</code><span class="src">dataverse:adx</span></div><p class="finding-detail">Entity list &#x27;Cases&#x27; has the OData feed enabled, serving &#x27;incident&#x27; at /_odata/incident. The OData feed is a separate channel from the Web API and is a frequent cause of exposure that a Web API-only review misses. Confirm the page hosting this list is access-controlled and the underlying table permission is correctly scoped.</p><dl class="evidence"><div class="ev-row"><dt>entity_set</dt><dd>(default)</dd></div><div class="ev-row"><dt>fields</dt><dd>(view columns)</dd></div><div class="ev-row"><dt>website</dt><dd>contoso.example</dd></div></dl><div class="docs"><span class="docs-label">How to fix</span><a class="doc" href="https://learn.microsoft.com/power-pages/security/security-best-practices" target="_blank" rel="noopener noreferrer">Power Pages security best practices</a><a class="doc" href="https://learn.microsoft.com/power-pages/security/table-permissions" target="_blank" rel="noopener noreferrer">Configure table permissions</a></div></article><h3 class="sev-heading sev-low">Low<span class="count">1</span></h3><article class="finding sev-low"><div class="finding-head"><span class="badge sev-low">Low</span><h4>Anonymous global read of a table</h4><code>product</code><span class="src">dataverse:adx</span></div><p class="finding-detail">Table permission &#x27;products&#x27; grants READ with GLOBAL scope on &#x27;product&#x27; to anonymous web role(s) Anonymous. Global scope means every row, not just a signed-in contact&#x27;s own records. The Web API is off and no OData feed is published, so a visitor cannot run their own query. The data is only reachable where a page renders it, so the real exposure is whatever those pages choose to show. No Liquid template, page copy, entity list or page script in this site was found to reference the table, so nothing appears to render it today. Treat the permission as dormant configuration: it grants access that only becomes live when someone adds a page that uses it. Nothing renders it and nothing can query it, so it is granting access no-one is using. Remove the permission to keep the anonymous role minimal. Columns reachable: (no Web API site setting; exposure depends on another channel).</p><dl class="evidence"><div class="ev-row"><dt>permission</dt><dd>products</dd></div><div class="ev-row"><dt>scope</dt><dd>Global</dd></div><div class="ev-row"><dt>roles</dt><dd>Anonymous</dd></div><div class="ev-row"><dt>website</dt><dd>contoso.example</dd></div><div class="ev-row"><dt>channel</dt><dd>render-only</dd></div><div class="ev-row"><dt>config_record</dt><dd><a href="https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_entitypermission&amp;id=perm-products" target="_blank" rel="noopener noreferrer">https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_entitypermission&amp;id=perm-products</a></dd></div><div class="ev-row"><dt>webapi_enabled</dt><dd>False</dd></div><div class="ev-row"><dt>webapi_fields</dt><dd>(off)</dd></div><div class="ev-row"><dt>rendered_at</dt><dd>(no page reference found)</dd></div><div class="ev-row"><dt>rendered_by_record</dt><dd>(none found)</dd></div><div class="ev-row"><dt>referenced_by</dt><dd>(none found)</dd></div><div class="ev-row"><dt>column_profiles</dt><dd>(none)</dd></div><div class="ev-row"><dt>sensitive_columns</dt><dd>(none detected)</dd></div><div class="ev-row"><dt>sensitive_table</dt><dd>False</dd></div></dl><div class="docs"><span class="docs-label">How to fix</span><a class="doc" href="https://learn.microsoft.com/power-pages/security/table-permissions#available-access-types" target="_blank" rel="noopener noreferrer">Table permission access types (scope)</a><a class="doc" href="https://learn.microsoft.com/power-pages/getting-started/tutorial-display-data-securely" target="_blank" rel="noopener noreferrer">Tutorial: display data securely</a><a class="doc" href="https://learn.microsoft.com/power-pages/security/security-best-practices" target="_blank" rel="noopener noreferrer">Power Pages security best practices</a></div></article><h3 class="sev-heading sev-info">Info<span class="count">1</span></h3><article class="finding sev-info"><div class="finding-head"><span class="badge sev-info">Info</span><h4>Anonymous Users role identified</h4><span class="src">dataverse:adx</span></div><p class="finding-detail">Web role &#x27;Anonymous&#x27; is the Anonymous Users role for contoso.example. Everything bound to it is reachable by the public internet. It currently carries 2 table permission(s).</p><dl class="evidence"><div class="ev-row"><dt>role</dt><dd>Anonymous</dd></div><div class="ev-row"><dt>table_permissions</dt><dd>2</dd></div></dl><div class="docs"><span class="docs-label">How to fix</span><a class="doc" href="https://learn.microsoft.com/power-pages/security/create-web-roles" target="_blank" rel="noopener noreferrer">Create and manage web roles</a><a class="doc" href="https://learn.microsoft.com/power-pages/security/assign-table-permissions" target="_blank" rel="noopener noreferrer">Assign table permissions to web roles</a></div></article>
+</section></div><div class="panel" role="tabpanel" id="panel-configuration" aria-labelledby="tab-configuration" hidden>
+<section id="configuration" class="card">
+  <h2>Configuration detail</h2>
+  
+  <h3>Standard data model <code>adx_*</code></h3>
+  <p class="muted"></p>
+  <p class="muted">Record names link to the configuration record in Dataverse.</p>
+  <h4>Websites</h4><div class="grid-wrap"><table class="grid"><thead><tr><th>Website</th><th>Record</th></tr></thead><tbody><tr><td>contoso.example</td><td><a href="https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_website&amp;id=site-1" target="_blank" rel="noopener noreferrer" title="Open this configuration record in Dataverse">site-1</a></td></tr></tbody></table></div>
+  <h4>Web roles</h4><div class="grid-wrap"><table class="grid"><thead><tr><th>Web role</th><th>Type</th><th>Table permissions</th><th>Column profiles</th><th>Page rules</th></tr></thead><tbody><tr><td><a href="https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_webrole&amp;id=role-Anonymous" target="_blank" rel="noopener noreferrer" title="Open this configuration record in Dataverse">Anonymous</a></td><td><span class="pill danger">Anonymous Users role</span></td><td>2</td><td>0</td><td>0</td></tr><tr><td><a href="https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_webrole&amp;id=role-Members" target="_blank" rel="noopener noreferrer" title="Open this configuration record in Dataverse">Members</a></td><td><span class="pill ">Authenticated Users role</span></td><td>1</td><td>2</td><td>1</td></tr><tr><td><a href="https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_webrole&amp;id=role-Staff" target="_blank" rel="noopener noreferrer" title="Open this configuration record in Dataverse">Staff</a></td><td><span class="pill ">Named role</span></td><td>0</td><td>0</td><td>0</td></tr></tbody></table></div>
+  <h4>Table permissions</h4><div class="grid-wrap"><table class="grid"><thead><tr><th>Table</th><th>Permission</th><th>Scope</th><th>Privileges</th><th>Web roles</th><th>Web API</th></tr></thead><tbody><tr><td><code>contact</code></td><td><a href="https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_entitypermission&amp;id=perm-contacts" target="_blank" rel="noopener noreferrer" title="Open this configuration record in Dataverse">contacts</a></td><td><span class="pill danger">Global</span></td><td>Read</td><td>Anonymous</td><td><span class="flag on">Yes</span></td></tr><tr><td><code>incident</code></td><td><a href="https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_entitypermission&amp;id=perm-own cases" target="_blank" rel="noopener noreferrer" title="Open this configuration record in Dataverse">own cases</a></td><td><span class="pill ">Contact</span></td><td>Read</td><td>Members</td><td><span class="flag off">No</span></td></tr><tr><td><code>product</code></td><td><a href="https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_entitypermission&amp;id=perm-products" target="_blank" rel="noopener noreferrer" title="Open this configuration record in Dataverse">products</a></td><td><span class="pill danger">Global</span></td><td>Read</td><td>Anonymous</td><td><span class="flag off">No</span></td></tr></tbody></table></div>
+  <h4>Web API site settings</h4><div class="grid-wrap"><table class="grid"><thead><tr><th>Table</th><th>Enabled</th><th>Published columns</th><th>Site settings</th></tr></thead><tbody><tr><td><code>contact</code></td><td><span class="flag on">Yes</span></td><td>emailaddress1,firstname</td><td><a href="https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_sitesetting&amp;id=set-1" target="_blank" rel="noopener noreferrer" title="Open this configuration record in Dataverse">enabled</a> <a href="https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_sitesetting&amp;id=set-2" target="_blank" rel="noopener noreferrer" title="Open this configuration record in Dataverse">fields</a></td></tr></tbody></table></div>
+  <h4>Column permission profiles</h4><div class="grid-wrap"><table class="grid"><thead><tr><th>Profile</th><th>Table</th><th>All-column default</th><th>Web roles</th><th>Per-column grants</th></tr></thead><tbody><tr><td><a href="https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_columnpermissionprofile&amp;id=prof-1" target="_blank" rel="noopener noreferrer" title="Open this configuration record in Dataverse">Edit profile</a></td><td><code>contact</code></td><td>Read, Update</td><td>Members</td><td>firstname: Read/Update</td></tr><tr><td><a href="https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&amp;etn=adx_columnpermissionprofile&amp;id=prof-2" target="_blank" rel="noopener noreferrer" title="Open this configuration record in Dataverse">Wide open</a></td><td><code>incident</code></td><td>Create, Read, Update</td><td>Members</td><td>(none)</td></tr></tbody></table></div>
+</section></div><div class="panel" role="tabpanel" id="panel-documentation" aria-labelledby="tab-documentation" hidden>
+<section id="documentation" class="card">
+  <h2>Microsoft Learn reference</h2>
+  <p>Official documentation for the features this report inspects. Individual
+     findings link to the pages relevant to them; these cover the model as a
+     whole. All links open on Microsoft Learn in your own locale.</p>
+  <ul class="doc-list"><li><a href="https://learn.microsoft.com/power-pages/security/power-pages-security" target="_blank" rel="noopener noreferrer">Power Pages security overview</a><span class="doc-url">https://learn.microsoft.com/power-pages/security/power-pages-security</span></li><li><a href="https://learn.microsoft.com/power-pages/security/security-best-practices" target="_blank" rel="noopener noreferrer">Power Pages security best practices</a><span class="doc-url">https://learn.microsoft.com/power-pages/security/security-best-practices</span></li><li><a href="https://learn.microsoft.com/power-pages/security/table-permissions" target="_blank" rel="noopener noreferrer">Configure table permissions</a><span class="doc-url">https://learn.microsoft.com/power-pages/security/table-permissions</span></li><li><a href="https://learn.microsoft.com/power-pages/security/table-permissions#available-access-types" target="_blank" rel="noopener noreferrer">Table permission access types (scope)</a><span class="doc-url">https://learn.microsoft.com/power-pages/security/table-permissions#available-access-types</span></li><li><a href="https://learn.microsoft.com/power-pages/security/create-web-roles" target="_blank" rel="noopener noreferrer">Create and manage web roles</a><span class="doc-url">https://learn.microsoft.com/power-pages/security/create-web-roles</span></li><li><a href="https://learn.microsoft.com/power-pages/security/column-permissions" target="_blank" rel="noopener noreferrer">Column permissions</a><span class="doc-url">https://learn.microsoft.com/power-pages/security/column-permissions</span></li><li><a href="https://learn.microsoft.com/power-pages/security/page-security" target="_blank" rel="noopener noreferrer">Page permissions</a><span class="doc-url">https://learn.microsoft.com/power-pages/security/page-security</span></li><li><a href="https://learn.microsoft.com/power-pages/configure/web-api-overview" target="_blank" rel="noopener noreferrer">Power Pages Web API overview</a><span class="doc-url">https://learn.microsoft.com/power-pages/configure/web-api-overview</span></li><li><a href="https://learn.microsoft.com/power-pages/admin/enhanced-data-model" target="_blank" rel="noopener noreferrer">Standard vs enhanced data model</a><span class="doc-url">https://learn.microsoft.com/power-pages/admin/enhanced-data-model</span></li><li><a href="https://learn.microsoft.com/power-pages/configure/implement-privacy" target="_blank" rel="noopener noreferrer">Implement privacy and personal data handling</a><span class="doc-url">https://learn.microsoft.com/power-pages/configure/implement-privacy</span></li></ul>
+</section></div>
+</main>
+<script>
+(function () {
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('.tab'));
+  if (!tabs.length) { return; }
+
+  function select(tab, focus) {
+    tabs.forEach(function (t) {
+      var on = t === tab;
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+      t.tabIndex = on ? 0 : -1;
+      document.getElementById('panel-' + t.dataset.panel).hidden = !on;
+    });
+    if (focus) { tab.focus(); }
+    history.replaceState(null, '', '#' + tab.dataset.panel);
   }
-  h1 { font-size: 20px; margin: 0 0 4px; }
-  .meta { color: #6b7280; font-size: 13px; margin-bottom: 16px; }
-  .chips { margin-bottom: 20px; }
-  .chip { display:inline-block; color:#fff; padding:3px 10px; border-radius:12px;
-           font-size:12px; font-weight:600; margin-right:6px; }
-  table { border-collapse: collapse; width: 100%; background:#fff;
-           border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
-  th { text-align:left; font-size:12px; text-transform:uppercase; letter-spacing:.04em;
-        color:#6b7280; padding:10px 14px; border-bottom:2px solid #e5e7eb; }
-  td { padding:12px 14px; border-bottom:1px solid #eceef1; vertical-align:top; }
-  .sev { color:#fff; padding:2px 9px; border-radius:10px; font-size:12px; font-weight:600;
-          white-space:nowrap; }
-  .det { color:#4b5563; font-size:13px; margin-top:5px; }
-  .ev { margin:6px 0 0; padding-left:18px; font-size:12.5px; color:#4b5563; }
-  code { background:#f0f1f3; padding:1px 5px; border-radius:4px; font-size:12.5px; }
-  .src { color:#9aa0a6; font-size:12px; white-space:nowrap; }
-</style></head><body>
-<h1>Power Pages exposure audit</h1>
-<div class="meta">Target: <code>https://contoso.crm.dynamics.com</code> &middot; 2026-09-11T07:46:40.396192+00:00</div>
-<div class="chips"><span class='chip' style='background:#b3123a'>Critical: 1</span><span class='chip' style='background:#d1493b'>High: 1</span><span class='chip' style='background:#3f7cac'>Low: 1</span><span class='chip' style='background:#5b6470'>Info: 4</span></div>
-<table>
-  <thead><tr><th>Severity</th><th>Finding</th><th>Table</th><th>Source</th></tr></thead>
-  <tbody>
-<tr><td><span class='sev' style='background:#b3123a'>Critical</span></td><td>Anonymous READ permission (Global)<div class=det>Table permission &#x27;Anon contacts&#x27; grants READ with GLOBAL scope to anonymous web role(s): Anonymous Users. Global scope means every row, not just a signed-in user&#x27;s own records. Any unauthenticated visitor can read the entire table. Web API is enabled for this table, so it is directly queryable at /_api/contacts (fields: *).</div><ul class='ev'><li><code>permission</code>: Anon contacts</li><li><code>scope</code>: Global</li><li><code>privileges</code>: read</li><li><code>roles</code>: Anonymous Users</li><li><code>webapi_enabled</code>: True</li></ul></td><td><code>contact</code></td><td class='src'>dataverse</td></tr>
-<tr><td><span class='sev' style='background:#d1493b'>High</span></td><td>External leak tied to a configured permission<div class=det>The anonymous scanner read &#x27;contacts&#x27; externally, and the Dataverse config explains it:<br>Anon contacts (read=True, scope=Global, roles=Anonymous Users)</div><ul class='ev'><li><code>root_cause_permissions</code>: 1</li></ul></td><td><code>contacts</code></td><td class='src'>correlation</td></tr>
-<tr><td><span class='sev' style='background:#3f7cac'>Low</span></td><td>Anonymous READ permission (Self)<div class=det>Table permission &#x27;Self account&#x27; grants READ to anonymous role(s) Anonymous Users but with Self scope. Scoped permissions resolve against the signed-in contact/account, which an anonymous visitor lacks, so this usually returns nothing — but review it: misuse of scope is a common misconfiguration.</div><ul class='ev'><li><code>permission</code>: Self account</li><li><code>scope</code>: Self</li><li><code>privileges</code>: read</li><li><code>roles</code>: Anonymous Users</li><li><code>webapi_enabled</code>: True</li></ul></td><td><code>account</code></td><td class='src'>dataverse</td></tr>
-<tr><td><span class='sev' style='background:#5b6470'>Info</span></td><td>Table permissions enumerated<div class=det>2 table permission record(s).</div><ul class='ev'><li><code>permissions</code>: 2</li></ul></td><td><code></code></td><td class='src'>dataverse</td></tr>
-<tr><td><span class='sev' style='background:#5b6470'>Info</span></td><td>Web API site settings enumerated<div class=det>2 table(s) have Webapi/&lt;entity&gt;/enabled = true.</div><ul class='ev'><li><code>webapi_enabled_tables</code>: 2</li></ul></td><td><code></code></td><td class='src'>dataverse</td></tr>
-<tr><td><span class='sev' style='background:#5b6470'>Info</span></td><td>Web roles enumerated<div class=det>2 web role(s); 1 anonymous, 1 authenticated.</div><ul class='ev'><li><code>roles</code>: 2</li></ul></td><td><code></code></td><td class='src'>dataverse</td></tr>
-<tr><td><span class='sev' style='background:#5b6470'>Info</span></td><td>Web API enabled for table<div class=det>Webapi enabled; no anonymous global-read permission found for it. Confirm the protecting table permission is correctly scoped.</div><ul class='ev'><li><code>fields</code>: (default)</li></ul></td><td><code>account</code></td><td class='src'>dataverse</td></tr>
-  </tbody>
-</table>
+
+  tabs.forEach(function (tab) {
+    tab.addEventListener('click', function () { select(tab, false); });
+    tab.addEventListener('keydown', function (e) {
+      var i = tabs.indexOf(tab), next = null;
+      if (e.key === 'ArrowRight') { next = tabs[(i + 1) % tabs.length]; }
+      if (e.key === 'ArrowLeft') { next = tabs[(i - 1 + tabs.length) % tabs.length]; }
+      if (e.key === 'Home') { next = tabs[0]; }
+      if (e.key === 'End') { next = tabs[tabs.length - 1]; }
+      if (next) { e.preventDefault(); select(next, true); }
+    });
+  });
+
+  var initial = tabs.filter(function (t) {
+    return '#' + t.dataset.panel === location.hash;
+  })[0];
+  if (initial) { select(initial, false); }
+
+  // Printing must not hide six of seven sections.
+  window.addEventListener('beforeprint', function () {
+    tabs.forEach(function (t) {
+      document.getElementById('panel-' + t.dataset.panel).hidden = false;
+    });
+  });
+  window.addEventListener('afterprint', function () {
+    select(tabs.filter(function (t) {
+      return t.getAttribute('aria-selected') === 'true';
+    })[0] || tabs[0], false);
+  });
+})();
+
+// Re-render timestamps in the reader's timezone, not the auditor's.
+(function () {
+  Array.prototype.forEach.call(document.querySelectorAll('time.ts'), function (el) {
+    var when = new Date(el.getAttribute('datetime'));
+    if (isNaN(when)) { return; }
+    try {
+      el.textContent = when.toLocaleString(undefined, {
+        day: '2-digit', month: 'short', year: 'numeric',
+        hour: '2-digit', minute: '2-digit', timeZoneName: 'short'
+      });
+      el.title = when.toISOString() + ' (UTC)';
+    } catch (e) { /* keep the server-rendered value */ }
+  });
+})();
+</script>
 </body></html>

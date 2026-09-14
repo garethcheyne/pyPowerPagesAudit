@@ -107,7 +107,8 @@ def _run_audit(args, report: Report, org_url: str, website: str = "",
     except DataverseError as exc:
         print(f"warning: WhoAmI failed: {exc}", file=sys.stderr)
     DataverseAudit(client, website=website or args.website,
-                   portal_url=portal_url).run(report)
+                   portal_url=portal_url,
+                   check_versions=not getattr(args, "no_version_check", False)).run(report)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -150,6 +151,9 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--website", metavar="NAME",
                         help="restrict the audit to websites whose name contains NAME "
                              "(useful when one environment hosts several sites)")
+        sp.add_argument("--no-version-check", action="store_true",
+                        help="skip fetching Microsoft's published release list "
+                             "(keeps the audit entirely offline)")
 
     sp_scan = sub.add_parser("scan", help="anonymous outside-in scan")
     anon_opts(sp_scan); common(sp_scan)
@@ -171,10 +175,19 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter)
     dv_opts(sp_naming)
     sp_naming.add_argument(
+        "--target", choices=("permissions", "profiles", "all"), default="all",
+        help="which records to rename (default: all)")
+    sp_naming.add_argument(
         "--format", default=naming.DEFAULT_TEMPLATE, metavar="TEMPLATE",
-        help="naming template. Placeholders: "
-             "{table} {scope} {privileges} {privileges_long} {roles} {website} "
-             f"{{name}}. Default: '{naming.DEFAULT_TEMPLATE}'")
+        help="table permission template. Placeholders: "
+             "{table} {scope} {scope_chain} {root_scope} {parent} {relationship} "
+             "{privileges} {privileges_compact} {privileges_long} {roles} "
+             f"{{website}} {{name}}. Default: '{naming.DEFAULT_TEMPLATE}'")
+    sp_naming.add_argument(
+        "--profile-format", default=naming.DEFAULT_PROFILE_TEMPLATE, metavar="TEMPLATE",
+        help="column permission profile template. Placeholders: "
+             "{table} {permissions} {permissions_long} {columns} {roles} "
+             f"{{website}} {{name}}. Default: '{naming.DEFAULT_PROFILE_TEMPLATE}'")
     sp_naming.add_argument(
         "--only-unclear", action="store_true",
         help="leave names that already mention their table and scope")
@@ -182,6 +195,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--anon-marker", default=naming.ANON_MARKER, metavar="TEXT",
         help="suffix for permissions bound to an Anonymous Users role "
              f"(default: '{naming.ANON_MARKER}'; pass '' to disable)")
+    sp_naming.add_argument(
+        "--max-name", type=int, metavar="N",
+        help="override the name length limit (default: read from the "
+             "environment's column metadata)")
     sp_naming.add_argument(
         "--apply", action="store_true",
         help="write the proposed names to Dataverse (default is a dry run)")
@@ -200,6 +217,7 @@ def _run_naming(args, report: Report, org_url: str, website: str = "") -> int:
 
     try:
         naming.validate_template(args.format)
+        naming.validate_template(args.profile_format, naming.PROFILE_PLACEHOLDERS)
     except naming.NamingError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -218,9 +236,22 @@ def _run_naming(args, report: Report, org_url: str, website: str = "") -> int:
         name_filter = (website or args.website or "").strip().lower()
         if name_filter:
             model = _filter_model_to_website(model, name_filter)
-        plans.append((model, naming.plan(model, args.format,
-                                         only_unclear=args.only_unclear,
-                                         anon_marker=args.anon_marker)))
+
+        if args.target in ("permissions", "all"):
+            limit = args.max_name or client.string_max_length(
+                f"{gen}_entitypermission",
+                model.perm_name_field) or naming.DEFAULT_MAX_NAME
+            plans.append((model, naming.plan(
+                model, args.format, only_unclear=args.only_unclear,
+                anon_marker=args.anon_marker, max_name=limit)))
+
+        if args.target in ("profiles", "all"):
+            limit = args.max_name or client.string_max_length(
+                f"{gen}_columnpermissionprofile",
+                model.cpp_name_field) or naming.DEFAULT_MAX_NAME
+            plans.append((model, naming.plan_profiles(
+                model, args.profile_format, only_unclear=args.only_unclear,
+                anon_marker=args.anon_marker, max_name=limit)))
 
     if not plans:
         print("No configuration generation in use; nothing to rename.", file=sys.stderr)
@@ -231,17 +262,25 @@ def _run_naming(args, report: Report, org_url: str, website: str = "") -> int:
         changes = plan.changes
         total_changes += len(changes)
         anon = sum(1 for r in plan.renames if r.anonymous)
-        print(f"\n{model.label} ({model.generation}_*) — "
+        print(f"\n{model.label} ({model.generation}_*) — {plan.kind}s: "
               f"{len(changes)} of {len(plan.renames)} would change; "
               f"{anon} bound to an anonymous role")
-        print(f"template: {plan.template}\n")
+        print(f"template: {plan.template}")
+        print(f"{plan.name_field or '(unknown column)'} accepts {plan.max_name} "
+              f"characters; longest proposed name is {plan.longest}\n")
         if not changes:
             continue
         width = min(52, max((len(r.current) for r in changes), default=10))
+        notes: list[str] = []
         for rename in sorted(changes, key=lambda r: (not r.anonymous,
                                                      r.table.lower(), r.proposed)):
-            note = f"   [{rename.reason}]" if rename.reason else ""
-            print(f"  {rename.current[:width]:<{width}}  ->  {rename.proposed}{note}")
+            print(f"  {rename.current[:width]:<{width}}  ->  {rename.proposed}")
+            if rename.reason:
+                notes.append(f"  {rename.proposed}\n      note: {rename.reason}")
+        if notes:
+            print("\n  Notes (not part of the name):")
+            for note in notes:
+                print(note)
 
     report.context["naming_plans"] = [p.to_dict() for _, p in plans]
 
@@ -253,13 +292,13 @@ def _run_naming(args, report: Report, org_url: str, website: str = "") -> int:
     for model, plan in plans:
         if not plan.changes:
             continue
-        if not model.perm_name_field:
-            print(f"{model.label}: could not determine the name column; skipped",
-                  file=sys.stderr)
+        if not plan.name_field:
+            print(f"{model.label} {plan.kind}s: could not determine the name "
+                  "column; skipped", file=sys.stderr)
             continue
-        errors = naming.apply(client, plan, model.perm_name_field)
+        errors = naming.apply(client, plan)
         done = len(plan.changes) - len(errors)
-        print(f"\n{model.label}: renamed {done} record(s).")
+        print(f"\n{model.label} {plan.kind}s: renamed {done} record(s).")
         for err in errors:
             print(f"  failed: {err}", file=sys.stderr)
     return 0

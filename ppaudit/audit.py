@@ -22,6 +22,7 @@ so each externally-proven leak is tied to the configuration that causes it.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 from .constants import (
@@ -35,6 +36,7 @@ from .dataverse import DataverseClient, DataverseError
 from .model import ConfigLoader, SchemaModel, TablePermission
 from .references import ReferenceIndex
 from .report import Finding, Report, Severity
+from . import versions
 
 
 def is_sensitive_column(name: str) -> bool:
@@ -58,6 +60,58 @@ SENSITIVE_COLUMN_SEEDS = [
     "fullname", "address1_line1", "address1_postalcode", "birthdate",
     "parentcustomerid", "domainname", "internalemailaddress",
 ]
+
+
+def _release_date(version: str) -> date | None:
+    """``9.3.2509.0`` -> September 2025. Power Pages encodes YYMM in the build."""
+    parts = version.split(".")
+    if len(parts) < 3 or not parts[2].isdigit() or len(parts[2]) != 4:
+        return None
+    year, month = 2000 + int(parts[2][:2]), int(parts[2][2:])
+    if not 1 <= month <= 12 or not 2015 <= year <= 2100:
+        return None
+    return date(year, month, 1)
+
+
+def _months_since(released: date) -> int:
+    today = date.today()
+    return (today.year - released.year) * 12 + today.month - released.month
+
+
+def _page_exposure_severity(webapi_open: bool, steerable: bool, constrained: bool,
+                            sensitive: bool, risky: bool) -> tuple[Severity, str]:
+    """Grade a page that renders anonymously-readable data.
+
+    Configuration alone cannot make this Critical. With the Web API off, the
+    page renders server-side: the visitor gets whatever the query emits and
+    cannot ask for anything else. That is the supported way to publish data, so
+    an unfiltered query is a prompt to read the Liquid, not evidence of a leak.
+
+    Critical is reserved for the cases where the visitor can actually influence
+    what comes back — a Web API endpoint, or a query built from request input.
+    """
+    if webapi_open:
+        return (Severity.CRITICAL if sensitive else Severity.HIGH,
+                "The Web API makes this directly queryable, so the permission is the "
+                "only limit. Restrict the published columns or the permission.")
+
+    if steerable:
+        return (Severity.CRITICAL if sensitive else Severity.HIGH,
+                "Because the query is built from request input, treat this as a "
+                "queryable endpoint: check the parameter is validated and cannot be "
+                "used to widen the result or inject conditions.")
+
+    if constrained:
+        return (Severity.LOW if sensitive else Severity.INFO,
+                "This looks deliberate. Confirm the filter restricts on the right "
+                "thing and cannot be satisfied by an anonymous visitor, then treat it "
+                "as published-by-design.")
+
+    return (Severity.MEDIUM if sensitive else Severity.LOW,
+            "Read the Liquid and confirm what the query returns: if it is unfiltered "
+            "and the table holds anything not meant to be public, add a filter, a page "
+            "permission, or narrow the table permission. Server-side rendering bounds "
+            "the columns but not the rows.")
 
 
 def _anonymous_read_severity(table: str, channel: str, referenced: bool,
@@ -155,10 +209,11 @@ class AccessEntry:
 
 class DataverseAudit:
     def __init__(self, client: DataverseClient, *, website: str | None = None,
-                 portal_url: str = "") -> None:
+                 portal_url: str = "", check_versions: bool = True) -> None:
         self.client = client
         self.website_filter = (website or "").strip().lower()
         self.portal_url = portal_url
+        self.check_versions = check_versions
         self.models: list[SchemaModel] = []
         self.access: list[AccessEntry] = []
         self.references: dict[str, list] = {}
@@ -225,11 +280,15 @@ class DataverseAudit:
             self._analyse_column_permissions(report, model)
             self._analyse_webapi(report, model)
             self._analyse_entity_lists(report, model)
+            self._analyse_page_exposure(report, model)
+            self._analyse_forms(report, model)
+            self._analyse_files(report, model)
             self._analyse_settings(report, model)
 
         report.access_matrix = self.access
         report.context["access_matrix"] = [a.to_dict() for a in self.access]
         report.context["dataverse_models"] = [m.to_dict() for m in active]
+        self._analyse_solutions(report)
         report.references = self.references
         report.context["references"] = {
             table: [r.to_dict() for r in refs]
@@ -506,6 +565,9 @@ class DataverseAudit:
                           "webapi_fields": (webapi.fields_raw or "*") if webapi else "(off)",
                           "rendered_at": ", ".join(sorted({r.url for r in refs if r.url})[:5])
                                          or "(no page reference found)",
+                          "rendered_by_record": ", ".join(
+                              sorted({r.config_url for r in refs if r.config_url})[:5])
+                                         or "(none found)",
                           "referenced_by": "; ".join(
                               sorted({f"{r.kind}: {r.source_name}" for r in refs})[:5])
                                          or "(none found)",
@@ -628,18 +690,25 @@ class DataverseAudit:
                        "should return nothing — verify that externally.")
 
             if entry.all_fields:
-                sev = Severity.MEDIUM if is_sensitive_table(entry.entity) else Severity.LOW
+                sev = Severity.HIGH if is_sensitive_table(entry.entity) else Severity.MEDIUM
                 report.add(Finding(
-                    sev, "Web API publishes every column of a table",
+                    sev, "Web API fields wildcard is deprecated",
                     table=entry.entity,
                     detail=(f"Webapi/{entry.entity}/enabled is true and "
                             f"Webapi/{entry.entity}/fields is "
-                            f"{entry.fields_raw or 'unset'} — every column of the table is "
-                            "published to whichever roles hold a table permission on it. "
-                            "List the specific columns the site actually needs instead, so "
-                            "new columns are not exposed automatically." + unbound),
+                            f"{entry.fields_raw or 'unset'}, so every column of the "
+                            "table is published to whichever roles hold a table "
+                            "permission on it — including columns added later. "
+                            "Microsoft deprecated the wildcard in the Power Pages "
+                            "9.8.8.x release (August 2026): list the columns "
+                            "explicitly, or set "
+                            f"Webapi/{entry.entity}/UseFieldsFromView to true and "
+                            "define a Dataverse view named 'Power Pages Web API "
+                            "Columns'." + unbound),
                     source=src,
                     evidence={"roles_with_permission": roles_with,
+                              "reference": "https://learn.microsoft.com/power-platform"
+                                           "/released-versions/portals/pagesversion988x",
                               "column_profiles":
                                   ", ".join(p.name for p in profiles) or "(none)"}))
             else:
@@ -676,6 +745,245 @@ class DataverseAudit:
                 evidence={"entity_set": entity_list.odata_entityset or "(default)",
                           "fields": entity_list.odata_fields or "(view columns)",
                           "website": model.website_name(entity_list.website_id)}))
+
+    def _analyse_page_exposure(self, report: Report, model: SchemaModel) -> None:
+        """Join what a page renders against whether the page is access-controlled.
+
+        A table permission says the data *may* be read; a page reference says
+        something actually reads it; a page permission says who may load the
+        page. Only the three together decide whether data reaches the public,
+        and reviewing them separately is how sites leak in plain sight.
+        """
+        src = f"dataverse:{model.generation}"
+        if self._index is None or not model.pages:
+            return
+
+        anon_roles = model.role_names(lambda r: r.is_anonymous)
+        anon_readable = {p.table.lower() for p in model.permissions
+                         if p.read and any(r in anon_roles for r in p.roles)}
+        if not anon_readable:
+            return
+
+        for table in sorted(anon_readable):
+            webapi = model.webapi_for(table)
+            columns = webapi.field_list if webapi else []
+            refs = self._references_for(table, columns or SENSITIVE_COLUMN_SEEDS)
+
+            # One finding per page, not per occurrence: a template that reads a
+            # table in four places is one thing to fix, not four.
+            by_url: dict[str, list] = {}
+            for ref in refs:
+                if ref.page_id and ref.url and not model.protecting_rules(ref.page_id):
+                    by_url.setdefault(ref.url, []).append(ref)
+
+            for url, hits in sorted(by_url.items()):
+                ref = hits[0]
+                page = model.page_by_id(ref.page_id)
+                sensitive = sorted({c for h in hits for c in h.columns
+                                    if is_sensitive_column(c)})
+                risky = sensitive or is_sensitive_table(table)
+                if not risky and is_portal_content(table):
+                    continue  # CMS content on a public page is the site working
+
+                webapi_open = bool(webapi and webapi.enabled)
+                steerable = any(h.visitor_input for h in hits)
+                constraints = sorted({c for h in hits for c in h.constraints})
+                constrained = all(h.constrained for h in hits) and bool(constraints)
+
+                severity, verdict = _page_exposure_severity(
+                    webapi_open, steerable, constrained, bool(sensitive), risky)
+
+                how = "; ".join(sorted({f"{h.how} (line {h.line})" for h in hits})[:4])
+                detail = (
+                    f"'{url}' renders '{table}' via {how}, and no web page access "
+                    "control rule covers it (its own or any ancestor's).")
+                if webapi_open:
+                    detail += (" The Web API is also enabled for this table, so a "
+                               "visitor can query it directly rather than only seeing "
+                               "what the page chooses to emit.")
+                elif steerable:
+                    detail += (" The query reads visitor-supplied input "
+                               "(request parameters), so the visitor — not the page — "
+                               "influences which rows come back.")
+                elif constrained:
+                    detail += (" The Web API is off for this table, so this is a "
+                               "server-side render: the page emits only what its query "
+                               f"selects, and that query is constrained ({', '.join(constraints)}).")
+                else:
+                    detail += (" The Web API is off for this table, so this is a "
+                               "server-side render and the visitor cannot compose their "
+                               "own query. No filter or condition was detected in the "
+                               "query block, so it may return the whole table.")
+                if sensitive:
+                    detail += (" Columns matching personal-data patterns appear in the "
+                               f"same query block: {', '.join(sensitive)}.")
+                detail += f" {verdict}"
+
+                report.add(Finding(
+                    severity, "Unprotected page renders anonymously-readable data",
+                    table=table, detail=detail, source=src,
+                    evidence={
+                        "url": url,
+                        "page": page.name if page else ref.source_name,
+                        "channel": ("Web API + page" if webapi_open else
+                                    "page render (server-side)"),
+                        "query_constraints": ", ".join(constraints) or "(none detected)",
+                        "visitor_controlled_input": steerable,
+                        "occurrences": len(hits),
+                        "page_record": model.record_url("webpage", ref.page_id),
+                        "content_record": ref.config_url,
+                        "how": how,
+                        "sensitive_columns": ", ".join(sensitive) or "(none detected)",
+                        "page_permission": "none (inherited rules checked)",
+                        "query": ref.block or ref.snippet,
+                    }))
+
+    def _analyse_forms(self, report: Report, model: SchemaModel) -> None:
+        """Entity and web forms are the write channel; unprotected ones accept input."""
+        src = f"dataverse:{model.generation}"
+        if not model.entity_forms:
+            return
+
+        pages_by_form: dict[str, list] = {}
+        for page in model.pages:
+            for ref_id in (page.entity_form_id, page.web_form_id):
+                if ref_id:
+                    pages_by_form.setdefault(ref_id.lower(), []).append(page)
+
+        for form in model.entity_forms:
+            hosted = pages_by_form.get(form.id.lower(), [])
+            open_pages = [p for p in hosted if not model.protecting_rules(p.id)]
+            mode = (form.mode or "unknown").lower()
+            writes = mode in ("insert", "edit") or mode == "unknown"
+            if not (writes and open_pages):
+                continue
+            urls = [f"{self.portal_url.rstrip('/')}{p.path}" if self.portal_url else p.path
+                    for p in open_pages]
+            severity = (Severity.HIGH if is_sensitive_table(form.table)
+                        else Severity.MEDIUM)
+            report.add(Finding(
+                severity, "Form on an unprotected page writes to a table",
+                table=form.table,
+                detail=(f"Entity form '{form.name}' is in {form.mode or 'an unknown'} "
+                        f"mode against '{form.table}' and sits on "
+                        f"{len(open_pages)} page(s) with no web page access control "
+                        "rule. Unauthenticated visitors can reach the form; whether "
+                        "they can submit depends on the table permission behind it, so "
+                        "confirm the two agree. Forms are the write channel a "
+                        "permission-only review misses."),
+                source=src,
+                evidence={"form": form.name, "mode": form.mode or "(unset)",
+                          "pages": ", ".join(urls[:5]) or "(not placed on a page)",
+                          "form_record": model.record_url("entityform", form.id)}))
+
+    def _analyse_files(self, report: Report, model: SchemaModel) -> None:
+        """Published files sit outside the table-permission model.
+
+        A web file is served from its own URL and is governed by the page
+        permissions of its parent page, not by any table permission. A file
+        whose parent page is unprotected is public, however locked down the
+        Dataverse side is.
+        """
+        src = f"dataverse:{model.generation}"
+        if not model.files:
+            return
+
+        open_files = [f for f in model.files
+                      if not f.parent_page_id or not model.protecting_rules(f.parent_page_id)]
+        if not open_files:
+            return
+        report.add(Finding(
+            Severity.LOW, "Published files are publicly reachable",
+            detail=(f"{len(open_files)} of {len(model.files)} web file(s) hang off a "
+                    "page with no Restrict Read rule, so they are downloadable without "
+                    "signing in. Web files are served from their own URL and are not "
+                    "governed by table permissions, so a locked-down permission model "
+                    "does not protect them. Confirm none carries internal or personal "
+                    "data."),
+            source=src,
+            evidence={"unprotected": len(open_files), "total": len(model.files),
+                      "examples": ", ".join(f.name for f in open_files[:5])}))
+
+    def _analyse_solutions(self, report: Report) -> None:
+        """Report installed Power Pages solutions against Microsoft's published release.
+
+        The reference point is fetched from Microsoft rather than hardcoded: any
+        constant baked in here would be wrong within a month.
+        """
+        try:
+            rows = self.client.portal_solutions()
+        except DataverseError:
+            return
+        if not rows:
+            return
+
+        solutions = []
+        for row in rows:
+            version = str(row.get("version") or "")
+            released = _release_date(version)
+            solutions.append({
+                "name": str(row.get("uniquename") or ""),
+                "friendly": str(row.get("friendlyname") or ""),
+                "version": version,
+                "released": released.isoformat() if released else "",
+                "months_old": _months_since(released) if released else None,
+            })
+        solutions.sort(key=lambda s: s["name"].lower())
+        report.context["portal_solutions"] = solutions
+
+        base = next((s for s in solutions if s["name"] == "CDSBasePortal"), None)
+        if base:
+            report.context["portal_version"] = base["version"]
+            report.context["portal_version_source"] = "CDSBasePortal solution"
+
+        current = versions.fetch_current_release() if self.check_versions else None
+        if current:
+            report.context["published_release"] = {
+                "version": current.version,
+                "released": current.released.isoformat(),
+                "source": current.source,
+            }
+
+        dated = [s for s in solutions if s["months_old"] is not None]
+        if not dated:
+            return
+
+        # Two independent yardsticks, so the finding stands up without network
+        # access and gets sharper with it.
+        newest_here = min(s["months_old"] for s in dated)
+        reference = (_months_since(current.released) if current else None)
+        cutoff = max(newest_here + 12, 12)
+        behind = sorted((s for s in dated if s["months_old"] >= cutoff),
+                        key=lambda s: -s["months_old"])
+        if not behind:
+            return
+
+        worst = behind[0]
+        detail = (
+            f"{len(behind)} installed Power Pages solution(s) are well behind the rest "
+            f"of this environment. The oldest is {worst['name']} {worst['version']} "
+            f"(~{worst['months_old']} months old), while the newest portal solution "
+            f"here is only ~{newest_here} months old — so this environment has already "
+            "received more recent portal releases that these packages missed.")
+        if current:
+            detail += (f" Microsoft's published current release is {current.label}, "
+                       f"from {current.source}.")
+        detail += (" The website host updates itself, but Dataverse solutions do not, "
+                   "and Microsoft does not certify an unsupported solution version to "
+                   "run against a current host — so fixes shipped in between are "
+                   "absent.")
+
+        evidence = {s["name"]: f"{s['version']} (~{s['months_old']} months)"
+                    for s in behind[:8]}
+        evidence["newest_portal_solution_here"] = f"~{newest_here} months old"
+        if current:
+            evidence["published_current_release"] = current.label
+            evidence["reference"] = current.source
+        report.add(Finding(
+            Severity.MEDIUM if worst["months_old"] >= (reference or 36) else Severity.LOW,
+            "Power Pages solutions are behind the rest of the environment",
+            detail=detail, source="dataverse", evidence=evidence))
+
 
     def _analyse_settings(self, report: Report, model: SchemaModel) -> None:
         src = f"dataverse:{model.generation}"

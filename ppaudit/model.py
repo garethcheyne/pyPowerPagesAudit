@@ -24,7 +24,7 @@ what is configured.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
 
 from .constants import (
     COLUMN_PERMISSION_LABELS,
@@ -42,6 +42,20 @@ from .references import ContentSource
 
 ANONYMOUS = "anonymous"
 AUTHENTICATED = "authenticated"
+
+
+class PublishedResource(NamedTuple):
+    """A thing the site serves at a live URL, for the report's "Published" tab.
+
+    ``kind`` is "Web page" or "Web file"; ``url`` is where a visitor reaches it;
+    ``record_url`` deep-links the Dataverse record that defines it.
+    """
+
+    kind: str
+    name: str
+    path: str
+    url: str
+    record_url: str
 
 
 # --- field resolution --------------------------------------------------------
@@ -300,9 +314,21 @@ class ContentSnippet:
 
 
 @dataclass
+class WebFile:
+    """A file published by the site, reachable at its own URL."""
+
+    id: str
+    name: str
+    partial_url: str = ""
+    parent_page_id: str = ""
+    website_id: str = ""
+
+
+@dataclass
 class Website:
     id: str
     name: str
+    primary_domain: str = ""
 
 
 @dataclass
@@ -315,6 +341,7 @@ class SchemaModel:
     org_url: str = ""                   # for building maker deep links
     entity_sets: dict[str, str] = field(default_factory=dict)
     perm_name_field: str = ""           # the column holding a permission's label
+    cpp_name_field: str = ""            # the column holding a profile's label
     websites: list[Website] = field(default_factory=list)
     roles: list[WebRole] = field(default_factory=list)
     permissions: list[TablePermission] = field(default_factory=list)
@@ -328,6 +355,7 @@ class SchemaModel:
     templates: list[WebTemplate] = field(default_factory=list)
     page_templates: list[PageTemplate] = field(default_factory=list)
     snippets: list[ContentSnippet] = field(default_factory=list)
+    files: list[WebFile] = field(default_factory=list)
     errors: dict[str, str] = field(default_factory=dict)
 
     # --- convenience views ---------------------------------------------------
@@ -372,6 +400,34 @@ class SchemaModel:
     def permissions_for_role(self, role_name: str) -> list[TablePermission]:
         return [p for p in self.permissions if role_name in p.roles]
 
+    def protecting_rules(self, page_id: str) -> list[PageAccessRule]:
+        """Restrict Read rules covering a page, including inherited ones.
+
+        Page permissions cascade down the page hierarchy, so a page with no rule
+        of its own is still protected if an ancestor carries one. Checking only
+        the page itself would report half the site as public.
+        """
+        by_id = {p.id.lower(): p for p in self.pages if p.id}
+        rules_by_page: dict[str, list[PageAccessRule]] = {}
+        for rule in self.page_rules:
+            if rule.right.replace(" ", "").lower() == "restrictread":
+                rules_by_page.setdefault(rule.page_id.lower(), []).append(rule)
+
+        found: list[PageAccessRule] = []
+        current = by_id.get((page_id or "").lower())
+        seen: set[str] = set()
+        while current and current.id.lower() not in seen:
+            seen.add(current.id.lower())
+            found += rules_by_page.get(current.id.lower(), [])
+            current = by_id.get((current.parent_id or "").lower())
+        return found
+
+    def page_by_id(self, page_id: str) -> WebPage | None:
+        for page in self.pages:
+            if page.id.lower() == (page_id or "").lower():
+                return page
+        return None
+
     def record_url(self, key: str, record_id: str) -> str:
         """Deep link to a configuration record in the model-driven maker UI.
 
@@ -384,6 +440,42 @@ class SchemaModel:
         logical = entity_set[:-1] if entity_set.endswith("s") else entity_set
         return (f"{self.org_url}/main.aspx?pagetype=entityrecord"
                 f"&etn={logical}&id={record_id}")
+
+    def published_pages(self, base_url: str = "") -> list[PublishedResource]:
+        """Every web page the site serves, with its resolved live URL.
+
+        Paths come from :meth:`resolve_page_paths`; without a ``base_url`` the URL
+        is the site-relative path, still clickable once a domain is known.
+        """
+        base = (base_url or "").rstrip("/")
+        out = []
+        for page in self.pages:
+            path = page.path or "/"
+            out.append(PublishedResource(
+                kind="Web page",
+                name=page.title or page.name,
+                path=path,
+                url=f"{base}{path}" if base else path,
+                record_url=self.record_url("webpage", page.id)))
+        return sorted(out, key=lambda r: r.path.lower())
+
+    def published_files(self, base_url: str = "") -> list[PublishedResource]:
+        """Every web file the site serves, at ``<parent page path>/<partial url>``."""
+        base = (base_url or "").rstrip("/")
+        pages = {p.id.lower(): p for p in self.pages if p.id}
+        out = []
+        for f in self.files:
+            partial = (f.partial_url or f.name).strip("/")
+            parent = pages.get((f.parent_page_id or "").lower())
+            parent_path = (parent.path if parent else "/") or "/"
+            path = f"{parent_path.rstrip('/')}/{partial}" if partial else parent_path
+            out.append(PublishedResource(
+                kind="Web file",
+                name=f.name,
+                path=path,
+                url=f"{base}{path}" if base else path,
+                record_url=self.record_url("webfile", f.id)))
+        return sorted(out, key=lambda r: r.path.lower())
 
     def content_sources(self, base_url: str = "") -> list[ContentSource]:
         """Every piece of content that can render data, with a URL where one exists.
@@ -407,11 +499,17 @@ class SchemaModel:
             if page.copy:
                 sources.append(ContentSource(
                     kind="Web page copy", name=page.name, text=page.copy,
-                    url=page_url(page), page_names=[page.name]))
+                    url=page_url(page),
+                    record_url=self.record_url("webpage", page.id),
+                    page_id=page.id,
+                    page_names=[page.name]))
             if page.custom_js:
                 sources.append(ContentSource(
                     kind="Web page JavaScript", name=page.name, text=page.custom_js,
-                    url=page_url(page), page_names=[page.name]))
+                    url=page_url(page),
+                    record_url=self.record_url("webpage", page.id),
+                    page_id=page.id,
+                    page_names=[page.name]))
 
         template_pages: dict[str, list[WebPage]] = {}
         for page_template in self.page_templates:
@@ -429,6 +527,8 @@ class SchemaModel:
             sources.append(ContentSource(
                 kind="Web template (Liquid)", name=template.name, text=template.source,
                 url=urls[0] if urls else "",
+                record_url=self.record_url("webtemplate", template.id),
+                page_id=hosted[0].id if hosted else "",
                 page_names=[p.name for p in hosted],
                 note=("rendered by " + ", ".join(urls[:5]) + ("…" if len(urls) > 5 else ""))
                 if urls else
@@ -438,6 +538,7 @@ class SchemaModel:
             if snippet.value:
                 sources.append(ContentSource(
                     kind="Content snippet", name=snippet.name, text=snippet.value,
+                    record_url=self.record_url("contentsnippet", snippet.id),
                     note="rendered wherever {% editable snippets['...'] %} names it"))
 
         list_pages: dict[str, list[WebPage]] = {}
@@ -455,6 +556,8 @@ class SchemaModel:
             sources.append(ContentSource(
                 kind="Entity list (view/filter FetchXML)", name=entity_list.name,
                 text=text, url=urls[0] if urls else "",
+                record_url=self.record_url("entitylist", entity_list.id),
+                page_id=hosted[0].id if hosted else "",
                 page_names=[p.name for p in hosted],
                 note=("shown on " + ", ".join(urls[:5])) if urls else
                      "not placed on a page in this configuration"))
@@ -566,7 +669,8 @@ class ConfigLoader:
         for row in self._fetch(model, "website"):
             model.websites.append(Website(
                 id=self.r.text(row, "website_id"),
-                name=self.r.text(row, "website_name", "(unnamed site)")))
+                name=self.r.text(row, "website_name", "(unnamed site)"),
+                primary_domain=self.r.text(row, "website_domain")))
 
     def _load_roles(self, model: SchemaModel) -> None:
         for row in self._fetch(model, "webrole"):
@@ -609,6 +713,8 @@ class ConfigLoader:
         role_field = self.r.candidates("role_name")[0]
         profiles: dict[str, ColumnPermissionProfile] = {}
         for row in self._fetch(model, "columnpermissionprofile", f"$expand={nav}"):
+            if not model.cpp_name_field:
+                model.cpp_name_field = self.r.resolved(row, "cpp_name")
             profile = ColumnPermissionProfile(
                 id=self.r.text(row, "cpp_id"),
                 name=self.r.text(row, "cpp_name", "(unnamed profile)"),
@@ -739,4 +845,12 @@ class ConfigLoader:
                 id=self.r.text(row, "snippet_id"),
                 name=self.r.text(row, "snippet_name", "(unnamed snippet)"),
                 value=self.r.text(row, "snippet_value"),
+                website_id=self.r.text(row, "website_ref")))
+
+        for row in self._fetch(model, "webfile"):
+            model.files.append(WebFile(
+                id=self.r.text(row, "file_id"),
+                name=self.r.text(row, "file_name", "(unnamed file)"),
+                partial_url=self.r.text(row, "file_partialurl"),
+                parent_page_id=self.r.text(row, "file_parentpage"),
                 website_id=self.r.text(row, "website_ref")))

@@ -123,6 +123,40 @@ class DataverseClient:
         except DataverseError as exc:
             return [], str(exc)
 
+    # --- metadata ------------------------------------------------------------
+
+    def string_max_length(self, entity: str, attribute: str) -> int | None:
+        """MaxLength of a string column, or None if it cannot be read.
+
+        Name fields are customisable per environment, so the limit has to come
+        from the target rather than a constant.
+        """
+        query = (f"EntityDefinitions(LogicalName='{entity}')/Attributes/"
+                 "Microsoft.Dynamics.CRM.StringAttributeMetadata"
+                 "?$select=LogicalName,MaxLength")
+        try:
+            for row in self.get(query):
+                if row.get("LogicalName") == attribute:
+                    return int(row["MaxLength"])
+        except (DataverseError, KeyError, TypeError, ValueError):
+            return None
+        return None
+
+    def portal_solutions(self) -> list[dict[str, Any]]:
+        """Installed Power Pages solutions and their versions.
+
+        These are the versions the Power Platform admin centre shows. They
+        matter for security: the website host updates itself, but the Dataverse
+        solutions do not, and Microsoft does not certify an unsupported solution
+        version to run against a current host.
+        """
+        query = ("solutions?$select=uniquename,friendlyname,version,installedon"
+                 "&$filter=ismanaged eq true and ("
+                 "contains(uniquename,'Portal') or contains(uniquename,'portal'))"
+                 "&$orderby=uniquename")
+        rows, _ = self.try_get(query)
+        return rows
+
     # --- writes -------------------------------------------------------------
 
     def patch(self, entity_set: str, record_id: str, body: dict[str, Any]) -> None:

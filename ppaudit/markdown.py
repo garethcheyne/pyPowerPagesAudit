@@ -62,6 +62,10 @@ def render(report: Report) -> str:
     if scan:
         section.next()
         lines += scan
+    rendered = _rendered(report, section.peek())
+    if rendered:
+        section.next()
+        lines += rendered
     for model in getattr(report, "models", []) or []:
         if not getattr(model, "in_use", True):
             continue
@@ -104,6 +108,9 @@ def _header(report: Report) -> list[str]:
     lines.append(f"**Run (UTC):** {report.started}  ")
     if context.get("whoami"):
         lines.append(f"**Audited as:** Dataverse user `{context['whoami']}`  ")
+    if context.get("portal_version"):
+        lines.append(f"**Power Pages version:** `{context['portal_version']}` "
+                     "(MicrosoftPortalBase)  ")
     if generations:
         labels = ", ".join(f"{g['label']} (`{g['generation']}_*`)" for g in generations)
         lines.append(f"**Configuration model(s) detected:** {labels}  ")
@@ -205,6 +212,45 @@ def _anonymous_surface(report: Report, n: int) -> list[str]:
           _bool(a.webapi_enabled), a.readable_columns]
          for a in sorted(auth, key=lambda x: (x.table.lower(), x.permission.lower()))],
         "No table permission is bound to an Authenticated Users role.")
+    return lines
+
+
+def _rendered(report: Report, n: int) -> list[str]:
+    """Where the site actually renders each table, with both links to follow."""
+    refs = getattr(report, "references", {}) or {}
+    populated = {t: r for t, r in refs.items() if r}
+    if not populated:
+        return []
+    lines = [f"## {n}. Where the data is rendered", "",
+             "Found by scanning the site's Liquid web templates, web page copy and "
+             "scripts, content snippets and entity list FetchXML. Where the Web API is "
+             "off, a page is the only channel, so the page is what bounds the exposure "
+             "— not the permission.", "",
+             "**Portal** is the live page, to see what it actually returns. "
+             "**Dataverse** is the record holding the Liquid or FetchXML, which is what "
+             "you edit to change it. **Query bounds** is what the query does to limit "
+             "its own result — with the Web API off a filtered query is usually "
+             "publishing by design, while `visitor input` means the query is built from "
+             "request parameters and the visitor steers it.", ""]
+    for table in sorted(populated):
+        lines += [f"### `{table}`", ""]
+        lines += _table(
+            ["Source", "Portal", "Dataverse", "How", "Line", "Query bounds", "Columns"],
+            [[f"{r.kind} — {r.source_name}",
+              _mdlink("View page", r.url) or "—",
+              _mdlink("Edit record", r.config_url) or "—",
+              r.how, r.line,
+              ("**visitor input**" if r.visitor_input
+               else ", ".join(r.constraints) or "unfiltered"),
+              ", ".join(f"`{c}`" for c in r.columns) or "—"]
+             for r in populated[table]],
+            "none")
+        for ref in populated[table]:
+            if not ref.block:
+                continue
+            lines += [f"<details><summary>Query — {_esc(ref.source_name)} "
+                      f"(line {ref.line})</summary>", "", "```xml", ref.block,
+                      "```", "", "</details>", ""]
     return lines
 
 
@@ -383,8 +429,13 @@ def _findings(report: Report, n: int) -> list[str]:
         if finding.source:
             lines += [f"_Source: `{finding.source}`_", ""]
         if finding.evidence:
-            lines += _table(["Evidence", "Value"],
-                            [[k, v] for k, v in finding.evidence.items()], "none")
+            query = str(finding.evidence.get("query") or "")
+            rows = [[k, v] for k, v in finding.evidence.items() if k != "query"]
+            if rows:
+                lines += _table(["Evidence", "Value"], rows, "none")
+            if query:
+                lines += ["**Query as written** — judge whether it bounds the result:",
+                          "", "```xml", query, "```", ""]
     if current is None:
         lines += ["_No findings._", ""]
     return lines

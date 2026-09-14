@@ -90,6 +90,7 @@ CONFIG_SCHEMAS: dict[str, dict] = {
             "contentsnippet": "adx_contentsnippets",
             "webform": "adx_webforms",
             "webformstep": "adx_webformsteps",
+            "webfile": "adx_webfiles",
         },
         "nav": {
             "entitypermission_webrole": "adx_entitypermission_webrole",
@@ -120,6 +121,10 @@ CONFIG_SCHEMAS: dict[str, dict] = {
             "contentsnippet": "mspp_contentsnippets",
             "webform": "mspp_webforms",
             "webformstep": "mspp_webformsteps",
+            "webfile": "mspp_webfiles",
+            # Enhanced sites use column *security* profiles instead of column
+            # permissions; absent on standard sites, so the fetch is non-fatal.
+            "columnsecurityprofile": "mspp_columnsecurityprofiles",
         },
         "nav": {
             "entitypermission_webrole": "mspp_entitypermission_webrole",
@@ -214,6 +219,14 @@ FIELD_CANDIDATES: dict[str, list[str]] = {
     "snippet_id": ["{p}_contentsnippetid"],
     "snippet_name": ["{p}_name"],
     "snippet_value": ["{p}_value"],
+    # web file (published attachment)
+    "file_id": ["{p}_webfileid"],
+    "file_name": ["{p}_name"],
+    "file_partialurl": ["{p}_partialurl"],
+    "file_parentpage": ["_{p}_parentpageid_value"],
+    # column security profile (enhanced model)
+    "csp_id": ["{p}_columnsecurityprofileid"],
+    "csp_name": ["{p}_name"],
     # web page access control rule
     "rule_id": ["{p}_webpageaccesscontrolruleid"],
     "rule_name": ["{p}_name"],
@@ -224,6 +237,7 @@ FIELD_CANDIDATES: dict[str, list[str]] = {
     "website_ref": ["_{p}_websiteid_value"],
     "website_id": ["{p}_websiteid"],
     "website_name": ["{p}_name"],
+    "website_domain": ["{p}_primarydomainname"],
 }
 
 # --- Option-set labels --------------------------------------------------------

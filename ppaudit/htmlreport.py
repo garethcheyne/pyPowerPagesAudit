@@ -14,8 +14,12 @@ from __future__ import annotations
 
 import html
 import re
+from datetime import datetime
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Iterable
 
+from . import docs
 from .report import Report, Severity
 
 # Fluent 2 status palette, mapped to severity.
@@ -95,43 +99,177 @@ def _record(model, key: str, record_id: str, text: str) -> str:
                  "Open this configuration record in Dataverse")
 
 
+def _doc_links(title: str) -> str:
+    """Microsoft Learn references for a finding — links only, never their text."""
+    links = docs.for_finding(title)
+    if not links:
+        return ""
+    items = "".join(
+        f'<a class="doc" href="{_esc(l.url)}" target="_blank" rel="noopener '
+        f'noreferrer">{_esc(l.title)}</a>' for l in links)
+    return f'<div class="docs"><span class="docs-label">How to fix</span>{items}</div>'
+
+
+def _timestamp(iso: str) -> str:
+    """A run time that reads correctly wherever the report is opened.
+
+    Rendered in the generating machine's local zone so the file is meaningful
+    on its own, and tagged with the machine-readable UTC value so the script
+    can re-render it in the reader's zone — these reports get emailed across
+    timezones, and a bare UTC stamp invites the wrong conclusion about when an
+    exposure was observed.
+    """
+    try:
+        moment = datetime.fromisoformat(iso).astimezone()
+    except (TypeError, ValueError):
+        return _esc(iso)
+    label = moment.strftime("%d %b %Y, %H:%M")
+    zone = moment.strftime("%Z") or moment.strftime("%z")
+    return (f'<time class="ts" datetime="{_esc(iso)}">'
+            f'{_esc(label)} {_esc(zone)}</time>')
+
+
 # --- sections ----------------------------------------------------------------
 
 
 def _header(report: Report) -> str:
     ctx = report.context
-    meta = []
-    if ctx.get("portal_url"):
-        meta.append(("Portal", f'<a href="{_esc(ctx["portal_url"])}" target="_blank" '
-                               f'rel="noopener noreferrer">{_esc(ctx["portal_url"])}</a>'))
-    if ctx.get("dataverse_url"):
-        meta.append(("Dataverse", _code(ctx["dataverse_url"])))
-    if not meta:
-        meta.append(("Target", _code(report.target)))
-    meta.append(("Run (UTC)", _esc(report.started)))
-    if ctx.get("whoami"):
-        meta.append(("Audited as", _code(ctx["whoami"])))
+    models = getattr(report, "models", []) or []
+    domains = [w.primary_domain for m in models
+               for w in getattr(m, "websites", []) if getattr(w, "primary_domain", "")]
     generations = ctx.get("config_generations", [])
-    if generations:
-        meta.append(("Configuration model",
-                     ", ".join(f'{_esc(g["label"])} <code>{_esc(g["generation"])}_*</code>'
-                               for g in generations)))
-    if ctx.get("content_sources_scanned"):
-        meta.append(("Content sources scanned", _esc(ctx["content_sources_scanned"])))
+    published = ctx.get("published_release") or {}
 
-    items = "".join(f'<div class="meta-item"><dt>{_esc(k)}</dt><dd>{v}</dd></div>'
-                    for k, v in meta)
+    # Grouped by the question each value answers: what was audited, what it runs
+    # on, and how the audit was performed. A flat list of seven values makes the
+    # reader do that sorting themselves.
+    groups: list[tuple[str, list[tuple[str, str]]]] = [
+        ("Site", [
+            ("Portal", f'<a href="{_esc(ctx["portal_url"])}" target="_blank" '
+                       f'rel="noopener noreferrer">{_esc(ctx["portal_url"])}</a>'
+             if ctx.get("portal_url") else ""),
+            ("Primary domain", _code(domains[0]) if domains else ""),
+        ]),
+        ("Environment", [
+            ("Dataverse", _code(ctx.get("dataverse_url") or report.target)),
+            ("Power Pages version",
+             (f'{_code(ctx["portal_version"])}'
+              f'<span class="meta-note">{_esc(ctx.get("portal_version_source", ""))}'
+              "</span>") if ctx.get("portal_version") else ""),
+            ("Latest release",
+             (f'{_code(published["version"])}'
+              f'<span class="meta-note">published by Microsoft</span>')
+             if published else ""),
+            ("Configuration model",
+             ", ".join(f'{_esc(g["label"])} <code>{_esc(g["generation"])}_*</code>'
+                       for g in generations)),
+        ]),
+        ("This audit", [
+            ("Run", _timestamp(report.started)),
+            ("Identity", _code(ctx["whoami"]) if ctx.get("whoami") else ""),
+            ("Content scanned",
+             (f'{_esc(ctx["content_sources_scanned"])}'
+              '<span class="meta-note">templates, pages, snippets, lists</span>')
+             if ctx.get("content_sources_scanned") else ""),
+        ]),
+    ]
+
+    blocks = []
+    for title, items in groups:
+        rendered = [(label, value) for label, value in items if value]
+        if not rendered:
+            continue
+        body = "".join(
+            f'<div class="meta-item"><dt>{_esc(label)}</dt><dd>{value}</dd></div>'
+            for label, value in rendered)
+        blocks.append(f'<section class="meta-group"><h2>{_esc(title)}</h2>'
+                      f'<dl>{body}</dl></section>')
+
     instance = ctx.get("instance") or "Power Pages exposure audit"
+    counts = report.counts()
+    worst = next((s for s in reversed(Severity) if counts[s.label]), Severity.INFO)
+    verdict = (f'{counts[worst.label]} {worst.label.lower()} '
+               f'finding{"s" if counts[worst.label] != 1 else ""}')
     return f"""
 <header class="hero">
-  <div class="hero-inner">
-    <div class="eyebrow">Power Pages &middot; Dataverse exposure audit</div>
-    <h1>{_esc(instance)}</h1>
-    <p class="lede">What an unauthenticated visitor can reach through this site,
-       and the configuration that allows it.</p>
-    <dl class="meta">{items}</dl>
+  <div class="hero-top">
+    {_logo()}
+    <div class="hero-titles">
+      <div class="eyebrow">Power Pages &middot; Dataverse exposure audit</div>
+      <h1>{_esc(instance)}</h1>
+    </div>
+    <div class="hero-verdict {_sev_class(worst)}">
+      <span class="hero-verdict-value">{counts[worst.label]}</span>
+      <span class="hero-verdict-label">{_esc(worst.label)}</span>
+    </div>
   </div>
+  <p class="lede">What an unauthenticated visitor can reach through this site,
+     and the configuration that allows it. Highest severity: {_esc(verdict)}.</p>
+  <div class="meta">{"".join(blocks)}</div>
 </header>"""
+
+
+def _documentation() -> str:
+    """A reference panel of official guidance. Links only \u2014 no copied content."""
+    items = "".join(
+        f'<li><a href="{_esc(l.url)}" target="_blank" rel="noopener noreferrer">'
+        f'{_esc(l.title)}</a><span class="doc-url">{_esc(l.url)}</span></li>'
+        for l in docs.GENERAL_DOCS)
+    return f"""
+<section id="documentation" class="card">
+  <h2>Microsoft Learn reference</h2>
+  <p>Official documentation for the features this report inspects. Individual
+     findings link to the pages relevant to them; these cover the model as a
+     whole. All links open on Microsoft Learn in your own locale.</p>
+  <ul class="doc-list">{items}</ul>
+</section>"""
+
+
+# The product icon, inlined so the report stays a single shareable file.
+# Used nominatively, to identify the Microsoft product being audited.
+_LOGO_FILE = Path(__file__).with_name("_img") / "PP-Hero_Icon_PowerPages.svg"
+
+_FALLBACK_LOGO = """
+<svg class="logo" viewBox="0 0 48 48" role="img" aria-label="Power Pages audit">
+  <defs>
+    <linearGradient id="ppg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#66c2ff"/>
+      <stop offset="55%" stop-color="#3b8ae2"/>
+      <stop offset="100%" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+  <rect x="6" y="3" width="28" height="38" rx="4" fill="url(#ppg)"/>
+  <rect x="12" y="11" width="16" height="2.6" rx="1.3" fill="#fff" opacity=".95"/>
+  <rect x="12" y="17" width="16" height="2.6" rx="1.3" fill="#fff" opacity=".75"/>
+  <rect x="12" y="23" width="10" height="2.6" rx="1.3" fill="#fff" opacity=".55"/>
+  <circle cx="33" cy="32" r="11" fill="#0b2a4a" opacity=".22"/>
+  <circle cx="33" cy="32" r="9.5" fill="none" stroke="#fff" stroke-width="2.2"/>
+  <path d="M23.5 32h19M33 22.5c4.6 5.4 4.6 13.6 0 19M33 22.5c-4.6 5.4-4.6 13.6 0 19"
+        fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/>
+</svg>"""
+
+
+@lru_cache(maxsize=1)
+def _logo() -> str:
+    """The product icon as inline SVG, sized by CSS rather than its own attributes.
+
+    Element ids inside the file are namespaced on the way in: the report inlines
+    the markup, and unprefixed ids like ``mask0`` would collide with anything
+    else on the page that used the same generated names.
+    """
+    try:
+        svg = _LOGO_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return _FALLBACK_LOGO
+
+    svg = re.sub(r'\s(width|height)="[^"]*"', "", svg, count=2)
+    svg = re.sub(r'\bid="([^"]+)"', r'id="pp-\1"', svg)
+    svg = re.sub(r'url\(#([^)]+)\)', r"url(#pp-\1)", svg)
+    svg = re.sub(r'href="#([^"]+)"', r'href="#pp-\1"', svg)
+    svg = svg.replace(
+        "<svg", '<svg class="logo" role="img" aria-label="Power Pages"', 1)
+    return svg
+
 
 
 def _summary(report: Report) -> str:
@@ -201,29 +339,41 @@ def _references(report: Report) -> str:
     for table in sorted(populated):
         rows = []
         for ref in populated[table]:
-            where = _esc(f"{ref.kind} — {ref.source_name}")
-            if ref.url:
-                where = (f'<a href="{_esc(ref.url)}" target="_blank" rel="noopener '
-                         f'noreferrer">{where}</a>')
             rows.append([
-                where,
-                f'<span class="muted">{_esc(ref.how)}</span>',
-                f'<span class="muted">line {ref.line}</span>',
+                _esc(f"{ref.kind} — {ref.source_name}"),
+                _link("View page", ref.url, "Open the live page on the portal")
+                or '<span class="muted">—</span>',
+                _link("Edit record", ref.config_url,
+                      "Open the Dataverse record holding this content")
+                or '<span class="muted">—</span>',
+                f'<span class="muted">{_esc(ref.how)}, line {ref.line}</span>',
+                (_pill("visitor input", "danger") if ref.visitor_input
+                 else _esc(", ".join(ref.constraints))
+                 or '<span class="muted">unfiltered</span>'),
                 " ".join(_code(c) for c in ref.columns) or '<span class="muted">—</span>',
-                f'<code class="snippet">{_esc(ref.snippet)}</code>',
+                (f'<details class="query"><summary>show query</summary>'
+                 f'<pre>{_esc(ref.block)}</pre></details>' if ref.block
+                 else f'<code class="snippet">{_esc(ref.snippet)}</code>'),
             ])
         blocks.append(
             f'<details class="ref"><summary><code>{_esc(table)}</code>'
             f'<span class="count">{len(populated[table])} reference(s)</span></summary>'
-            + _table(["Where", "How", "Line", "Columns", "Source excerpt"], rows, "none")
+            + _table(["Source", "Portal", "Dataverse", "How", "Query bounds",
+                      "Columns", "Query"], rows, "none")
             + "</details>")
     return f"""
 <section id="rendered" class="card">
   <h2>Where the data is rendered</h2>
   <p>Found by scanning the site's Liquid web templates, web page copy and scripts,
-     content snippets and entity list FetchXML. Open the URL to see what the page
-     actually returns — where the Web API is off, the page is the only channel, so
-     the page is what bounds the exposure.</p>
+     content snippets and entity list FetchXML. Where the Web API is off, the page
+     is the only channel, so the page is what bounds the exposure.</p>
+  <p><strong>Portal</strong> opens the live page to see what it actually returns.
+     <strong>Dataverse</strong> opens the record that holds the Liquid or FetchXML,
+     which is what you edit to change it.</p>
+  <p><strong>Query bounds</strong> is what the query does to limit its own result.
+     With the Web API off the page renders server-side, so a filtered query is
+     usually publishing by design. <code>visitor input</code> is the opposite: the
+     query is built from request parameters, so the visitor steers it.</p>
   {"".join(blocks)}
 </section>"""
 
@@ -254,12 +404,18 @@ def _findings(report: Report) -> str:
         cards = []
         for f in items:
             evidence = ""
-            if f.evidence:
+            query = str(f.evidence.get("query") or "")
+            rows = {k: v for k, v in f.evidence.items() if k != "query"}
+            if rows:
                 evidence = "".join(
                     f'<div class="ev-row"><dt>{_esc(k)}</dt>'
                     f'<dd>{_linkify(str(v))}</dd></div>'
-                    for k, v in f.evidence.items())
+                    for k, v in rows.items())
                 evidence = f'<dl class="evidence">{evidence}</dl>'
+            if query:
+                evidence += (f'<details class="query"><summary>Query as written '
+                             f'&mdash; judge whether it bounds the result</summary>'
+                             f'<pre>{_esc(query)}</pre></details>')
             detail = _linkify(f.detail).replace("\n", "<br>") if f.detail else ""
             cards.append(
                 f'<article class="finding {_sev_class(severity)}">'
@@ -267,7 +423,8 @@ def _findings(report: Report) -> str:
                 f'<h4>{_esc(f.title)}</h4>'
                 f'{_code(f.table)}'
                 f'<span class="src">{_esc(f.source)}</span></div>'
-                f'<p class="finding-detail">{detail}</p>{evidence}</article>')
+                f'<p class="finding-detail">{detail}</p>{evidence}'
+                f'{_doc_links(f.title)}</article>')
         blocks.append(
             f'<h3 class="sev-heading {_sev_class(severity)}">{_esc(severity.label)}'
             f'<span class="count">{len(items)}</span></h3>' + "".join(cards))
@@ -354,23 +511,197 @@ def _configuration(report: Report) -> str:
 </section>"""
 
 
+def _published(report: Report) -> str:
+    """Live URLs the site serves: web pages, web files, and data endpoints.
+
+    Everything here is a link a reviewer can click to see what the site actually
+    returns, rather than a configuration record describing what it should return.
+    """
+    ctx = report.context
+    models = [m for m in (getattr(report, "models", []) or [])
+              if getattr(m, "in_use", True)]
+
+    base = (ctx.get("portal_url") or "").rstrip("/")
+    if not base:
+        domain = next((w.primary_domain for m in models
+                       for w in getattr(m, "websites", [])
+                       if getattr(w, "primary_domain", "")), "")
+        if domain:
+            base = "https://" + domain.replace("https://", "").replace("http://", "").rstrip("/")
+
+    def url_cell(url: str) -> str:
+        return _link(url, url, "Open in a new tab") if url else '<span class="muted">—</span>'
+
+    pages = [r for m in models for r in m.published_pages(base)]
+    files = [r for m in models for r in m.published_files(base)]
+
+    pages_table = _table(
+        ["Page", "Path", "URL", "Dataverse"],
+        [[_esc(r.name), _code(r.path), url_cell(r.url),
+          _link("record", r.record_url, "Open the web page record in Dataverse")
+          or '<span class="muted">—</span>']
+         for r in pages],
+        "No web pages found in the configuration.")
+
+    files_table = _table(
+        ["File", "URL", "Dataverse"],
+        [[_esc(r.name), url_cell(r.url),
+          _link("record", r.record_url, "Open the web file record in Dataverse")
+          or '<span class="muted">—</span>']
+         for r in files],
+        "No web files found in the configuration.")
+
+    # Data endpoints: the outside-in URLs a tester clicks to confirm exposure.
+    endpoint_base = base or report.target.rstrip("/")
+    endpoint_rows: list[list[str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add_endpoint(table: str, surface: str, path: str, status: str, cls: str = "") -> None:
+        key = (table, path)
+        if key in seen:
+            return
+        seen.add(key)
+        url = f"{endpoint_base}{path}" if endpoint_base else path
+        endpoint_rows.append([_code(table), _esc(surface), url_cell(url), _pill(status, cls)])
+
+    if endpoint_base and (ctx.get("discovered_tables") or ctx.get("anon_exposed_tables")):
+        add_endpoint("$metadata", "OData schema", "/_odata/$metadata",
+                     "readable" if ctx.get("discovered_tables") else "probed")
+    for table in ctx.get("anon_exposed_tables") or []:
+        add_endpoint(table, "Web API", f"/_api/{table}", "confirmed leak", "danger")
+        add_endpoint(table, "OData feed", f"/_odata/{table}", "confirmed leak", "danger")
+    for model in models:
+        for w in getattr(model, "webapi", []):
+            if getattr(w, "enabled", False):
+                add_endpoint(w.entity, "Web API", f"/_api/{w.entity}", "enabled", "warn")
+
+    endpoints_table = _table(
+        ["Table", "Surface", "URL", "Status"],
+        endpoint_rows,
+        "No data endpoints were confirmed reachable and none are enabled in config.")
+
+    note = ("" if endpoint_base else
+            '<p class="callout warn">No portal URL is known for this run, so URLs are '
+            'shown as site-relative paths. Prefix them with the site domain to open them.</p>')
+
+    return f"""
+<section id="published" class="card">
+  <h2>Published URLs</h2>
+  <p>Everything the site serves at a live address: pages a visitor can browse,
+     files it hosts, and the data endpoints an unauthenticated caller can hit.
+     Every link opens the live resource so you can see exactly what it returns.</p>
+  {note}
+  <h3>Web pages <span class="count">{len(pages)}</span></h3>
+  {pages_table}
+  <h3>Web files <span class="count">{len(files)}</span></h3>
+  {files_table}
+  <h3>Data endpoints <span class="count">{len(endpoint_rows)}</span></h3>
+  <p><code>confirmed leak</code> was read anonymously by the scanner;
+     <code>enabled</code> is switched on in the Web API site settings but not
+     (yet) confirmed leaking; <code>$metadata</code> discloses the schema.</p>
+  {endpoints_table}
+</section>"""
+
+
 def render(report: Report) -> str:
-    nav = [("summary", "Summary"), ("anonymous", "Anonymous access"),
-           ("external", "External scan"), ("rendered", "Where rendered"),
-           ("findings", "Findings"), ("configuration", "Configuration")]
-    body = "".join([
-        _summary(report), _anonymous(report), _external(report),
-        _references(report), _findings(report), _configuration(report),
-    ])
-    present = [(anchor, label) for anchor, label in nav if f'id="{anchor}"' in body]
-    links = "".join(f'<a href="#{a}">{_esc(l)}</a>' for a, l in present)
+    counts = report.counts()
+    actionable = sum(counts[s.label] for s in Severity if s >= Severity.MEDIUM)
+    panels = [
+        ("summary", "Summary", None, _summary(report)),
+        ("anonymous", "Anonymous access", None, _anonymous(report)),
+        ("external", "External scan", None, _external(report)),
+        ("rendered", "Where rendered", None, _references(report)),
+        ("findings", "Findings", actionable or None, _findings(report)),
+        ("configuration", "Configuration", None, _configuration(report)),
+        ("documentation", "Documentation", None, _documentation()),
+    ]
+    present = [(a, label, count, body) for a, label, count, body in panels if body]
+
+    tabs = "".join(
+        f'<button class="tab" role="tab" id="tab-{a}" aria-controls="panel-{a}" '
+        f'aria-selected="{"true" if i == 0 else "false"}" '
+        f'tabindex="{0 if i == 0 else -1}" data-panel="{a}">{_esc(label)}'
+        + (f'<span class="tab-count">{count}</span>' if count else "")
+        + "</button>"
+        for i, (a, label, count, _) in enumerate(present))
+
+    sections = "".join(
+        f'<div class="panel" role="tabpanel" id="panel-{a}" aria-labelledby="tab-{a}"'
+        f'{"" if i == 0 else " hidden"}>{body}</div>'
+        for i, (a, _, _, body) in enumerate(present))
+
     return _TEMPLATE.format(
         title=_esc(report.context.get("instance") or "Power Pages exposure audit"),
         header=_header(report),
-        nav=f'<nav class="toc">{links}</nav>' if links else "",
-        body=body,
+        tabs=f'<nav class="tabs" role="tablist" aria-label="Report sections">{tabs}</nav>',
+        body=sections,
         styles=_STYLES,
+        script=_SCRIPT,
     )
+
+
+# Tabs are progressive enhancement: without JS every panel is simply visible.
+_SCRIPT = """
+(function () {
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('.tab'));
+  if (!tabs.length) { return; }
+
+  function select(tab, focus) {
+    tabs.forEach(function (t) {
+      var on = t === tab;
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+      t.tabIndex = on ? 0 : -1;
+      document.getElementById('panel-' + t.dataset.panel).hidden = !on;
+    });
+    if (focus) { tab.focus(); }
+    history.replaceState(null, '', '#' + tab.dataset.panel);
+  }
+
+  tabs.forEach(function (tab) {
+    tab.addEventListener('click', function () { select(tab, false); });
+    tab.addEventListener('keydown', function (e) {
+      var i = tabs.indexOf(tab), next = null;
+      if (e.key === 'ArrowRight') { next = tabs[(i + 1) % tabs.length]; }
+      if (e.key === 'ArrowLeft') { next = tabs[(i - 1 + tabs.length) % tabs.length]; }
+      if (e.key === 'Home') { next = tabs[0]; }
+      if (e.key === 'End') { next = tabs[tabs.length - 1]; }
+      if (next) { e.preventDefault(); select(next, true); }
+    });
+  });
+
+  var initial = tabs.filter(function (t) {
+    return '#' + t.dataset.panel === location.hash;
+  })[0];
+  if (initial) { select(initial, false); }
+
+  // Printing must not hide six of seven sections.
+  window.addEventListener('beforeprint', function () {
+    tabs.forEach(function (t) {
+      document.getElementById('panel-' + t.dataset.panel).hidden = false;
+    });
+  });
+  window.addEventListener('afterprint', function () {
+    select(tabs.filter(function (t) {
+      return t.getAttribute('aria-selected') === 'true';
+    })[0] || tabs[0], false);
+  });
+})();
+
+// Re-render timestamps in the reader's timezone, not the auditor's.
+(function () {
+  Array.prototype.forEach.call(document.querySelectorAll('time.ts'), function (el) {
+    var when = new Date(el.getAttribute('datetime'));
+    if (isNaN(when)) { return; }
+    try {
+      el.textContent = when.toLocaleString(undefined, {
+        day: '2-digit', month: 'short', year: 'numeric',
+        hour: '2-digit', minute: '2-digit', timeZoneName: 'short'
+      });
+      el.title = when.toISOString() + ' (UTC)';
+    } catch (e) { /* keep the server-rendered value */ }
+  });
+})();
+"""
 
 
 _STYLES = """
@@ -432,44 +763,132 @@ body {
 a { color: var(--brand-80); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
-/* --- hero: Power Platform maker-portal masthead ------------------------- */
+/* --- hero: the light Power Pages masthead -------------------------------
+   Colours sampled from the product page hero. Redrawn as CSS gradients
+   rather than hotlinking the CDN asset, so the report stays a single file
+   that renders offline and calls nothing on open. */
 .hero {
+  position: relative; overflow: hidden;
   background:
-    radial-gradient(1200px 400px at 12% -40%, rgba(71,158,245,.45), transparent 60%),
-    linear-gradient(120deg, #0b2a4a 0%, #115ea3 45%, #7a3fa8 100%);
-  color: #fff; padding: 40px 32px 32px;
+    radial-gradient(700px 300px at 88% 18%, rgba(0,119,211,.55), transparent 62%),
+    radial-gradient(520px 260px at 66% 74%, rgba(191,181,231,.60), transparent 66%),
+    radial-gradient(420px 220px at 78% 46%, rgba(126,190,228,.50), transparent 68%),
+    linear-gradient(180deg, #f8f8f8 0%, #f3f3f3 100%);
+  color: var(--fg-1);
+  border-bottom: 1px solid var(--stroke-2);
+  padding: 32px 32px 26px;
 }
-.hero-inner { max-width: none; margin: 0; }
-.eyebrow {
-  text-transform: uppercase; letter-spacing: .08em; font-size: 12px;
-  font-weight: 600; opacity: .82; margin-bottom: 8px;
+/* The ribbon sweep, so the panel reads as Power Pages rather than a wash. */
+.hero::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background:
+    radial-gradient(1100px 150px at 108% 8%, rgba(42,81,148,.50), transparent 55%),
+    radial-gradient(800px 120px at 52% 96%, rgba(189,181,230,.45), transparent 60%);
 }
-.hero h1 {
-  font-family: var(--font-display); font-size: 32px; line-height: 40px;
-  font-weight: 600; margin: 0 0 6px;
-}
-.lede { margin: 0 0 20px; font-size: 16px; line-height: 22px; opacity: .9; max-width: 70ch; }
-.meta { display: flex; flex-wrap: wrap; gap: 10px 28px; margin: 0; }
-.meta-item dt {
-  font-size: 12px; line-height: 16px; text-transform: uppercase;
-  letter-spacing: .04em; opacity: .75; font-weight: 600;
-}
-.meta-item dd { margin: 2px 0 0; font-size: 14px; }
-.meta a, .meta code { color: #fff; }
-.meta code { background: rgba(255,255,255,.16); }
-
-/* --- nav ---------------------------------------------------------------- */
-.toc {
-  position: sticky; top: 0; z-index: 5;
-  background: var(--bg-surface); border-bottom: 1px solid var(--stroke-2);
-  padding: 0 32px; display: flex; gap: 4px; overflow-x: auto;
+.hero-top, .lede, .meta { position: relative; z-index: 1; }
+.hero-top { display: flex; align-items: center; gap: 18px; margin-bottom: 10px; }
+.logo { width: 52px; height: 52px; flex: none;
+        filter: drop-shadow(0 1px 3px rgba(0,0,0,.18)); }
+.hero-titles { min-width: 0; }
+.hero-verdict {
+  margin-left: auto; text-align: center; flex: none;
+  background: rgba(255,255,255,.72); border: 1px solid var(--stroke-1);
+  border-radius: var(--r-lg); padding: 8px 18px;
   box-shadow: var(--shadow-2);
 }
-.toc a {
-  padding: 12px 14px; font-size: 14px; font-weight: 600; color: var(--fg-2);
-  border-bottom: 2px solid transparent; white-space: nowrap;
+.hero-verdict-value { display: block; font-family: var(--font-display);
+                      font-size: 26px; line-height: 30px; font-weight: 600; }
+.hero-verdict-label { display: block; font-size: 11px; font-weight: 600;
+                      text-transform: uppercase; letter-spacing: .06em; }
+.hero-verdict.sev-critical { color: var(--sev-critical); }
+.hero-verdict.sev-high     { color: var(--sev-high); }
+.hero-verdict.sev-medium   { color: var(--sev-medium); }
+.hero-verdict.sev-low      { color: var(--sev-low); }
+.hero-verdict.sev-info     { color: var(--sev-info); }
+.eyebrow {
+  text-transform: uppercase; letter-spacing: .08em; font-size: 12px;
+  font-weight: 600; color: var(--brand-70); margin-bottom: 2px;
 }
-.toc a:hover { color: var(--brand-80); border-bottom-color: var(--stroke-1); text-decoration: none; }
+.hero h1 {
+  font-family: var(--font-display); font-size: 28px; line-height: 36px;
+  font-weight: 600; margin: 0; color: var(--fg-1);
+}
+.lede { margin: 0 0 20px; font-size: 15px; line-height: 21px;
+        max-width: 78ch; color: var(--fg-2); }
+/* Grouped by question rather than a flat run of values, with a rule between
+   columns so the groups read as groups. */
+.meta { display: grid; gap: 10px 0; margin: 0;
+        grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); }
+.meta-group { padding: 0 26px; border-left: 1px solid var(--stroke-1); }
+.meta-group:first-child { padding-left: 0; border-left: 0; }
+.meta-group > h2 {
+  font-family: var(--font); font-size: 11px; line-height: 15px; margin: 0 0 8px;
+  text-transform: uppercase; letter-spacing: .09em; font-weight: 700;
+  color: var(--brand-70);
+}
+.meta-group > dl { margin: 0; display: grid; gap: 8px; }
+.meta-item { min-width: 0; }
+.meta-item dt {
+  font-size: 11px; line-height: 15px; color: var(--fg-3); font-weight: 600;
+}
+.meta-item dd { margin: 2px 0 0; font-size: 14px; line-height: 19px;
+                overflow-wrap: anywhere; color: var(--fg-1); }
+.meta-note { display: block; font-size: 11px; line-height: 15px;
+             color: var(--fg-3); margin-top: 2px; }
+.meta a { color: var(--brand-70); }
+.meta code { background: rgba(255,255,255,.75); border: 1px solid var(--stroke-2); }
+.meta time { border-bottom: 1px dotted var(--fg-3); cursor: help; }
+
+/* --- tabs --------------------------------------------------------------- */
+.tabs {
+  position: sticky; top: 0; z-index: 5;
+  background: var(--bg-surface); border-bottom: 1px solid var(--stroke-2);
+  padding: 0 32px; display: flex; gap: 2px; overflow-x: auto;
+  box-shadow: var(--shadow-2);
+}
+.tab {
+  appearance: none; background: none; border: 0; cursor: pointer;
+  font-family: inherit; font-size: 14px; font-weight: 600; color: var(--fg-2);
+  padding: 12px 16px 10px; white-space: nowrap; display: flex; align-items: center;
+  gap: 8px; border-bottom: 2px solid transparent; border-radius: var(--r-md) var(--r-md) 0 0;
+}
+.tab:hover { background: var(--bg-subtle); color: var(--fg-1); }
+.tab:focus-visible { outline: 2px solid var(--brand-80); outline-offset: -2px; }
+.tab[aria-selected="true"] { color: var(--brand-70); border-bottom-color: var(--brand-80); }
+.tab-count {
+  font-size: 11px; font-weight: 700; background: var(--sev-critical-bg);
+  color: var(--sev-critical); border: 1px solid var(--sev-critical-stroke);
+  border-radius: var(--r-circular); padding: 0 7px; line-height: 17px;
+}
+.panel[hidden] { display: none; }
+
+/* --- documentation links ------------------------------------------------- */
+.docs {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--stroke-2);
+}
+.docs-label {
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--fg-3); margin-right: 2px;
+}
+.doc {
+  font-size: 12px; font-weight: 600; padding: 2px 10px;
+  background: var(--brand-160); color: var(--brand-70);
+  border: 1px solid var(--sev-low-stroke); border-radius: var(--r-circular);
+}
+.doc:hover { background: var(--sev-low-bg); text-decoration: none;
+             border-color: var(--brand-80); }
+.doc::after { content: " \\2197" / ""; font-weight: 400; }
+.doc-list { list-style: none; margin: 0; padding: 0;
+            display: grid; gap: 8px;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+.doc-list li {
+  border: 1px solid var(--stroke-2); border-radius: var(--r-lg);
+  padding: 10px 14px; background: var(--bg-subtle);
+}
+.doc-list a { font-weight: 600; display: block; }
+.doc-url { display: block; font-size: 11px; color: var(--fg-3);
+           font-family: var(--mono); word-break: break-all; margin-top: 2px; }
 
 /* --- layout ------------------------------------------------------------- */
 main { max-width: none; margin: 0; padding: 24px 32px 64px; }
@@ -615,25 +1034,36 @@ details.ref > summary {
   display: flex; align-items: center; gap: 8px;
 }
 details.ref > summary::-webkit-details-marker { display: none; }
-details.ref > summary::before { content: "\\25B8"; color: var(--fg-3); }
-details.ref[open] > summary::before { content: "\\25BE"; }
+details.ref > summary::before { content: "\\25B8" / ""; color: var(--fg-3); }
+details.ref[open] > summary::before { content: "\\25BE" / ""; }
 details.ref[open] > summary { border-bottom: 1px solid var(--stroke-2); }
 details.ref .grid-wrap { border: 0; margin: 0; border-radius: 0; }
+details.query > summary { cursor: pointer; font-size: 12px; color: var(--brand-80);
+                         font-weight: 600; }
+details.query pre {
+  margin: 6px 0 0; padding: 10px 12px; max-width: 70ch; overflow-x: auto;
+  background: var(--bg-muted); border-radius: var(--r-md);
+  font-family: var(--mono); font-size: 12px; line-height: 17px;
+  white-space: pre-wrap; word-break: break-word; color: var(--fg-1);
+}
 
 @media print {
-  .toc { display: none; }
-  .hero { background: #115ea3 !important; -webkit-print-color-adjust: exact;
+  .tabs { display: none; }
+  .panel[hidden] { display: block !important; }
+  .hero { background: #f3f3f3 !important; -webkit-print-color-adjust: exact;
           print-color-adjust: exact; }
+  .hero::after { display: none; }
   .card { break-inside: avoid; box-shadow: none; }
   details.ref[open] { break-inside: avoid; }
-  details.ref:not([open]) > summary::before { content: "\\25B8"; }
+  details.ref:not([open]) > summary::before { content: "\\25B8" / ""; }
 }
 @media (max-width: 720px) {
-  .hero { padding: 28px 20px 24px; }
-  .hero h1 { font-size: 24px; line-height: 32px; }
+  .hero { padding: 20px 16px 18px; }
+  .hero h1 { font-size: 22px; line-height: 28px; }
+  .hero-verdict { padding: 6px 12px; }
   main { padding: 16px; }
   .card { padding: 16px; }
-  .toc { padding: 0 16px; }
+  .tabs { padding: 0 8px; }
   .evidence { grid-template-columns: 1fr; }
 }
 """
@@ -646,8 +1076,9 @@ _TEMPLATE = """<!DOCTYPE html>
 <style>{styles}</style>
 </head><body>
 {header}
-{nav}
+{tabs}
 <main>
 {body}
 </main>
+<script>{script}</script>
 </body></html>"""
