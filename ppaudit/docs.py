@@ -65,6 +65,14 @@ DISPLAY_SECURELY = DocLink(
 PRIVACY = DocLink(
     "Implement privacy and personal data handling",
     f"{LEARN}/power-pages/configure/implement-privacy")
+PUBLISHING_STATES = DocLink(
+    "Create and manage publishing states",
+    f"{LEARN}/power-pages/configure/publishing-states")
+WEB_FILES = DocLink(
+    "Add and manage web files", f"{LEARN}/power-pages/configure/web-files")
+RELEASES = DocLink(
+    "Power Pages released versions",
+    f"{LEARN}/power-platform/released-versions/portals/")
 
 # Finding title -> the pages that help fix it. Titles are matched exactly first,
 # then by prefix, so parameterised titles ("Anonymous read with Self scope")
@@ -73,6 +81,8 @@ FINDING_DOCS: dict[str, list[DocLink]] = {
     "Anonymous global read of a table": [ACCESS_TYPES, DISPLAY_SECURELY, BEST_PRACTICES],
     "Anonymous data modification permitted": [ACCESS_TYPES, TABLE_PERMISSIONS,
                                               BEST_PRACTICES],
+    "Anonymous record creation permitted": [ACCESS_TYPES, TABLE_PERMISSIONS,
+                                            BEST_PRACTICES],
     "Anonymous read with": [ACCESS_TYPES, TABLE_PERMISSIONS],
     "Anonymous Users role identified": [WEB_ROLES, ASSIGN_PERMISSIONS],
     "No Anonymous Users role is defined": [WEB_ROLES],
@@ -103,6 +113,28 @@ FINDING_DOCS: dict[str, list[DocLink]] = {
                                                         PAGE_SECURITY],
     "Anonymous OData metadata is readable": [BEST_PRACTICES, WEB_API],
     "Personal data reachable anonymously": [PRIVACY, ACCESS_TYPES],
+    # The page/permission/content join — the tool's highest-value finding, and
+    # the one a reader is most likely to need guidance on.
+    "Unprotected page renders anonymously-readable data": [PAGE_SECURITY, ACCESS_TYPES,
+                                                           DISPLAY_SECURELY],
+    "Unpublished pages would expose data once published": [PUBLISHING_STATES,
+                                                           PAGE_SECURITY],
+    "Form on an unprotected page writes to a table": [PAGE_SECURITY, TABLE_PERMISSIONS],
+    "Published files are publicly reachable": [WEB_FILES, PAGE_SECURITY],
+    "Column permission profile bound to an anonymous role": [COLUMN_PERMISSIONS,
+                                                             ASSIGN_PERMISSIONS],
+    "Column permission profile bound to no web role": [COLUMN_PERMISSIONS,
+                                                       ASSIGN_PERMISSIONS],
+    "Power Pages solutions are behind the rest of the environment": [RELEASES],
+    "Standard data model not in use": [ENHANCED_MODEL],
+    "Enhanced data model not in use": [ENHANCED_MODEL],
+    # Scanner findings. The titles name the surface ("... via Web API"), so these
+    # are prefix keys.
+    "Whole table readable anonymously via": [ACCESS_TYPES, TABLE_PERMISSIONS,
+                                             BEST_PRACTICES],
+    "Table endpoint open via": [ACCESS_TYPES, TABLE_PERMISSIONS],
+    "Column-level leak via": [COLUMN_PERMISSIONS, ACCESS_TYPES],
+    "OData $metadata is anonymously readable": [WEB_API_HOWTO, BEST_PRACTICES],
 }
 
 # Always shown in the report's own help section.

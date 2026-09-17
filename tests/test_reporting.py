@@ -34,6 +34,21 @@ def test_finding_titles_the_audit_emits_resolve_to_docs():
         "Table permission bound to no web role",
         "Entity list publishes an OData feed",
         "Site setting weakens the security posture",
+        # The page/permission/content join, and the rest of the security findings.
+        "Unprotected page renders anonymously-readable data",
+        "Unpublished pages would expose data once published",
+        "Form on an unprotected page writes to a table",
+        "Published files are publicly reachable",
+        "Column permission profile bound to an anonymous role",
+        "Column permission profile bound to no web role",
+        "Power Pages solutions are behind the rest of the environment",
+        "Standard data model not in use",
+        # Scanner titles name their surface, so these exercise the prefix match.
+        "Whole table readable anonymously via Web API",
+        "Whole table readable anonymously via OData feed",
+        "Table endpoint open via Web API (no rows returned now)",
+        "Column-level leak via OData feed",
+        "OData $metadata is anonymously readable",
     ]
     for title in emitted:
         assert docs.for_finding(title), f"no documentation mapped for {title!r}"
@@ -121,3 +136,40 @@ def test_findings_sort_by_severity_descending():
     report.add(Finding(Severity.HIGH, "High thing"))
     severities = [f.severity for f in report.sorted()]
     assert severities == sorted(severities, reverse=True)
+
+
+def test_html_has_a_published_tab_with_clickable_endpoint_urls():
+    from ppaudit.model import WebFile
+
+    report = _report()
+    report.models[0].files = [
+        WebFile(id="f1", name="brochure.pdf", partial_url="brochure.pdf",
+                parent_page_id="page-pub", website_id="site-1")]
+    # Endpoint rows come from the anonymous probe, using real entity-set names.
+    report.context["endpoint_probes"] = [
+        {"table": "contact", "surface": "Web API",
+         "url": "https://portal.example/_api/contacts",
+         "status": 200, "verdict": "leak", "note": "rows returned"},
+        {"table": "metadata", "surface": "OData schema",
+         "url": "https://portal.example/_odata/$metadata",
+         "status": 404, "verdict": "unavailable",
+         "note": "OData EntitySet API is disabled for this site"}]
+    html = report.to_html()
+
+    assert 'data-panel="published"' in html          # the tab button
+    assert 'id="panel-published"' in html            # the panel
+    assert 'href="https://portal.example/_api/contacts"' in html
+    assert ">leak<" in html                          # verdict badge from the probe
+    assert ">unavailable<" in html                   # OData surface reported off
+    assert 'href="https://portal.example/api/brochure.pdf"' in html
+
+
+def test_published_tab_badges_anonymous_probe_verdicts():
+    report = _report()
+    pages = report.models[0].published_pages("https://portal.example")
+    open_url = next(p.url for p in pages)
+    report.context["url_probes"] = {
+        open_url: {"status": 200, "verdict": "open", "final_path": "/api/"}}
+    html = report.to_html()
+    assert '<span class="pill warn"' in html and ">open 200<" in html
+    assert "Anonymous probe:" in html          # the per-section tally line

@@ -109,3 +109,100 @@ def test_privileges_reports_only_what_is_granted():
     perm = permission("p", "contact", "Self", read=True, write=True, append=True)
     assert perm.privileges() == ["Read", "Write", "Append"]
     assert perm.mutating == ["Write"]
+
+
+# --- published resource URLs -------------------------------------------------
+
+
+def test_published_pages_build_absolute_clickable_urls():
+    from ppaudit.model import WebPage
+
+    model = build_model(pages=[
+        WebPage(id="root", name="Home", partial_url=""),
+        WebPage(id="leaf", name="Contact", partial_url="contact-us", parent_id="root"),
+    ])
+    model.resolve_page_paths()
+    urls = {r.name: r.url for r in model.published_pages("https://portal.example/")}
+    assert urls["Contact"] == "https://portal.example/contact-us"
+    assert urls["Home"] == "https://portal.example/"
+
+
+def test_published_pages_prefer_title_and_fall_back_to_path_only():
+    from ppaudit.model import WebPage
+
+    model = build_model(pages=[WebPage(id="p", name="record name",
+                                       title="Nice title", partial_url="x")])
+    model.resolve_page_paths()
+    r = model.published_pages()[0]           # no base url
+    assert r.name == "Nice title"
+    assert r.url == "/x"                      # site-relative, still usable
+
+
+def test_published_files_hang_off_their_parent_page_path():
+    from ppaudit.model import WebFile, WebPage
+
+    model = build_model(pages=[
+        WebPage(id="docs", name="Docs", partial_url="docs"),
+    ], files=[
+        WebFile(id="f1", name="guide.pdf", partial_url="guide.pdf", parent_page_id="docs"),
+        WebFile(id="f2", name="root.css", partial_url="/root.css"),
+    ])
+    model.resolve_page_paths()
+    urls = {r.name: r.url for r in model.published_files("https://portal.example")}
+    assert urls["guide.pdf"] == "https://portal.example/docs/guide.pdf"
+    assert urls["root.css"] == "https://portal.example/root.css"
+
+
+def test_language_variants_collapse_to_one_row_per_root_page():
+    from ppaudit.model import WebPage
+
+    model = build_model(pages=[
+        WebPage(id="root", name="About", partial_url="about", is_root=True),
+        WebPage(id="en", name="About (en)", partial_url="about", root_page_id="root"),
+        WebPage(id="mi", name="About (mi)", partial_url="about", root_page_id="root"),
+    ])
+    model.resolve_page_paths()
+    rows = model.published_pages("https://portal.example")
+    assert len(rows) == 1                       # not three
+    assert rows[0].url == "https://portal.example/about"
+    assert "2 languages" in rows[0].name        # two content pages = two languages
+
+
+def test_orphan_pages_are_flagged_and_home_is_not():
+    from ppaudit.model import WebPage
+
+    model = build_model(pages=[
+        WebPage(id="home", name="Home", partial_url="", is_root=True),
+        WebPage(id="child", name="Team", partial_url="team", parent_id="home", is_root=True),
+        WebPage(id="loose", name="Hidden", partial_url="hidden", is_root=True),
+        WebPage(id="broken", name="Broken", partial_url="broken",
+                parent_id="gone", is_root=True),
+    ])
+    model.resolve_page_paths()
+    flagged = {r.name: r.orphan for r in model.published_pages()}
+    assert flagged["Home"] is False             # no parent, but it is the home page
+    assert flagged["Team"] is False             # parented under home
+    assert flagged["Hidden"] is True            # no parent, not home
+    assert flagged["Broken"] is True            # parent record is missing
+
+
+def test_detached_language_variant_is_surfaced_as_an_orphan():
+    """A content page whose root page is gone is reachable but belongs to nothing."""
+    from ppaudit.model import WebPage
+
+    model = build_model(pages=[
+        WebPage(id="home", name="Home", partial_url="", is_root=True),
+        WebPage(id="live-root", name="Products", partial_url="products", is_root=True,
+                parent_id="home"),
+        WebPage(id="live-en", name="Products en", partial_url="products",
+                root_page_id="live-root"),
+        # its root record no longer exists in the page set:
+        WebPage(id="ghost-en", name="Old promo", partial_url="old-promo",
+                root_page_id="deleted-root"),
+    ])
+    model.resolve_page_paths()
+    rows = {r.path: r for r in model.published_pages()}
+    assert rows["/products"].orphan is False          # live root, variant collapsed
+    assert "languages" not in rows["/products"].name  # one content page = one language
+    assert rows["/old-promo"].orphan is True          # detached variant surfaced
+    assert "detached variant" in rows["/old-promo"].name

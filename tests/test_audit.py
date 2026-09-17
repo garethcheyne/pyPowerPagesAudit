@@ -179,6 +179,36 @@ def test_inherited_page_rule_also_suppresses_the_finding():
     assert _run(model).findings == []
 
 
+def test_a_draft_page_is_latent_not_live_exposure():
+    """Draft content is not served, so it must not be reported as a leak."""
+    model = build_model(
+        roles=[role("Anonymous", anon=True)],
+        permissions=[permission("p", "contact", "Global", roles=["Anonymous"])],
+        pages=[page("draft", "Pricing", "pricing", copy=CONTACT_FETCH,
+                    state="Draft", live=False)])
+    model.resolve_page_paths()
+    findings = _run(model).findings
+    assert [f.title for f in findings] == [
+        "Unpublished pages would expose data once published"]
+    assert findings[0].severity is Severity.LOW
+    assert findings[0].evidence["tables"] == "contact"
+    assert "Pricing (Draft)" in findings[0].detail
+
+
+def test_a_draft_and_a_live_page_are_reported_separately():
+    model = build_model(
+        roles=[role("Anonymous", anon=True)],
+        permissions=[permission("p", "contact", "Global", roles=["Anonymous"])],
+        pages=[page("live", "Speakers", "speakers", copy=CONTACT_FETCH),
+               page("draft", "Pricing", "pricing", copy=CONTACT_FETCH,
+                    state="Draft", live=False)])
+    model.resolve_page_paths()
+    by_title = {f.title: f for f in _run(model).findings}
+    assert by_title["Unprotected page renders anonymously-readable data"] \
+        .evidence["url"] == "https://portal.example/speakers"
+    assert "Unpublished pages would expose data once published" in by_title
+
+
 def test_no_anonymous_permission_means_no_finding():
     model = build_model(
         roles=[role("Members", auth=True)],
@@ -219,3 +249,59 @@ def test_finding_carries_both_dataverse_records():
     evidence = _run(model).findings[0].evidence
     assert "etn=adx_webpage" in evidence["page_record"]
     assert "etn=adx_webpage" in evidence["content_record"]
+
+
+# --- anonymous mutation severity: create is not a data breach ----------------
+
+from ppaudit.audit import _anonymous_mutation_severity
+
+
+def test_create_only_via_form_is_low_not_critical():
+    """The user's point: anonymous Create on lead via a contact form is by design."""
+    sev, why = _anonymous_mutation_severity("lead", ["Create"], "form")
+    assert sev is Severity.LOW
+    assert "exposes no data" in why or "by design" in why
+
+
+def test_create_only_with_no_channel_is_low_and_dormant():
+    sev, why = _anonymous_mutation_severity("lead", ["Create"], "none")
+    assert sev is Severity.LOW
+    assert "dormant" in why.lower() or "nothing writes" in why.lower()
+
+
+def test_create_via_web_api_is_high_injection_risk():
+    sev, _ = _anonymous_mutation_severity("lead", ["Create"], "api")
+    assert sev is Severity.HIGH
+
+
+def test_delete_via_web_api_is_critical():
+    sev, _ = _anonymous_mutation_severity("contact", ["Delete"], "api")
+    assert sev is Severity.CRITICAL
+
+
+def test_write_with_no_channel_is_medium_dormant():
+    sev, _ = _anonymous_mutation_severity("contact", ["Write"], "none")
+    assert sev is Severity.MEDIUM
+
+
+def test_create_only_finding_title_is_not_data_modification():
+    from ppaudit.report import Report
+    model = build_model(
+        roles=[role("Anonymous", anon=True)],
+        permissions=[permission("new leads", "lead", "Global",
+                                read=False, create=True, roles=["Anonymous"])])
+    model.resolve_page_paths()
+    report = Report(target="x")
+    # Drive the analyser directly, without a live client.
+    from ppaudit.audit import DataverseAudit
+    audit = DataverseAudit.__new__(DataverseAudit)
+    audit._index = None
+    audit.references = {}
+    audit._externally_seen = set()
+    audit._analyse_permissions(report, model)
+    titles = [f.title for f in report.findings]
+    assert "Anonymous record creation permitted" in titles
+    assert "Anonymous data modification permitted" not in titles
+    creation = next(f for f in report.findings
+                    if f.title == "Anonymous record creation permitted")
+    assert creation.severity is Severity.LOW      # create-only, no channel

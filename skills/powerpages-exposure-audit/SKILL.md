@@ -57,6 +57,10 @@ Targets come from `instances.yaml` (auto-discovered), with `${...}` secrets
 resolved from `.env`. Every instance is audited in turn. Pass `--url` /
 `--org-url` to bypass the config file.
 
+Always pass a subcommand and `--no-input`: at a terminal the tool otherwise
+stops to ask which site and which reports. Target one site with
+`--instance "<name>"` rather than auditing every environment in the file.
+
 Exit code is non-zero when anything **High** or above is found, so it can gate a
 pipeline.
 
@@ -107,6 +111,18 @@ Severity is a function of **channel × data class**, not of the permission alone
 
 Confirmed externally by the scanner is always Critical.
 
+Most findings also carry a mitigation verdict, derived from their evidence and
+shown beside the severity: **Confirmed exposed** (the scanner read it, or it is a
+correlation finding), **Not mitigated** (queryable at `/_api`, a visitor-steerable
+query, or a live write channel), **Partly mitigated** (reachable only through a
+page or a form), **Mitigated** (a FetchXML filter bounds it, or nothing exercises
+the permission). Findings whose evidence does not settle it — role flags, site
+settings, OData feeds — carry no verdict; say so rather than inferring one. Lead
+with the verdict when summarising: a list of severities with no mitigation context
+reads as a site on fire and buries the finding that matters. In the JSON,
+reconstruct it from `evidence` — `channel`, `query_constraints`,
+`visitor_controlled_input`, `write_channel`, `webapi_fields`.
+
 Anonymous **write/create/delete** is Critical regardless of scope.
 
 Key finding types:
@@ -120,6 +136,7 @@ Key finding types:
 | `Web API publishes every column of a table` | `fields = *`. New columns are exposed automatically. |
 | `One web role serves both anonymous and signed-in users` | Both flags set. The two audiences cannot be separated. |
 | `Entity list publishes an OData feed` | A channel separate from the Web API. |
+| `Unpublished pages would expose data once published` | Draft pages query anonymous-readable data with no page permission. Latent, not live — fix it now while it is free. |
 
 **Always verify before reporting a breach.** The reference scanner matches
 generously by design — it points, it does not prove. Open the URL in the finding
@@ -210,8 +227,12 @@ deployment scripts sometimes do.
 
 - Both `adx_` (standard) and `mspp_` (enhanced) configuration models are read;
   the tool detects which is in use.
-- Not read: `adx_webfile`, `adx_invitation`, enhanced-model column security
-  profiles. File attachment exposure is out of scope.
+- Not read: `adx_invitation`, enhanced-model column security profiles. File
+  attachment exposure is out of scope.
+- Publishing state is read: content in a non-visible state (stock: Draft) is not
+  served, so it is reported as latent rather than live exposure. A draft page
+  that the anonymous probe finds `open` means the state is not being enforced —
+  investigate that.
 - Reference matching is regex over Liquid/FetchXML/JS. It finds candidates for a
   human to confirm; it does not execute or prove anything.
 - The audit reflects configuration at the moment it ran. Environments change

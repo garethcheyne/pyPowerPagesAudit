@@ -165,6 +165,57 @@ def _anonymous_read_severity(table: str, channel: str, referenced: bool,
             "confirm the filtering is deliberate.")
 
 
+def _anonymous_mutation_severity(table: str, privileges: list[str],
+                                 channel: str) -> tuple[Severity, str]:
+    """Grade anonymous Create/Write/Delete by what can actually be done with it.
+
+    Create alone adds records but reads none back, so it is an integrity/abuse
+    risk, not a data breach — and it is only reachable if a channel exercises it.
+    Write/Delete threaten existing data and rate higher. A permission with no
+    channel (Web API off, no form) is dormant configuration. ``channel`` is one
+    of ``api`` (direct /_api write), ``form`` (a basic/advanced form), ``none``.
+    """
+    destructive = "Write" in privileges or "Delete" in privileges
+
+    if channel == "api":
+        if destructive:
+            return (Severity.CRITICAL,
+                    "The Web API is enabled, so an anonymous caller can PATCH or DELETE "
+                    "existing rows directly — data can be tampered with or destroyed.")
+        if is_portal_content(table):
+            return (Severity.CRITICAL,
+                    "The Web API is enabled and this is portal content, so an anonymous "
+                    "caller can inject pages, templates or snippets — defacement or "
+                    "stored script. Remove the Create grant now.")
+        return (Severity.HIGH,
+                "The Web API is enabled, so an anonymous caller can POST arbitrary rows "
+                "at /_api — spam, poisoning, injection. No data is read back, so this is "
+                "an integrity risk rather than a data breach, but it is directly exploitable.")
+
+    if channel == "form":
+        if destructive:
+            return (Severity.HIGH,
+                    "A form on the site lets anonymous visitors edit or delete records of "
+                    "this table. Editing or deleting existing data from a public form is "
+                    "unusual — confirm the form is scoped and this is intended.")
+        return (Severity.LOW,
+                "Create is reached only through a form — the ordinary 'contact us' / "
+                "'request a quote' pattern, where a public form creates a lead or case by "
+                "design. Create exposes no data. Confirm the form validates input and has "
+                "spam/bot protection.")
+
+    # channel == "none": no Web API, no form or page writes to this table.
+    if destructive:
+        return (Severity.MEDIUM,
+                "Write/Delete is granted to the anonymous role, but nothing on the site "
+                "writes to this table today — no Web API, no form. Dormant, but one page "
+                "or form away from live. Remove it unless it is deliberate.")
+    return (Severity.LOW,
+            "Create is granted to the anonymous role, but nothing writes to this table — "
+            "no Web API and no form exercises it. Dormant configuration that exposes no "
+            "data. Remove it to keep the anonymous role minimal.")
+
+
 @dataclass
 class AccessEntry:
     """One role's effective reach into one table, via one permission."""
@@ -490,6 +541,31 @@ class DataverseAudit:
                 "run their own query. The data is only reachable where a page renders "
                 "it, so the real exposure is whatever those pages choose to show.")
 
+    def _write_channel(self, model: SchemaModel, table: str, webapi) -> tuple[str, str]:
+        """How an anonymous visitor could actually write to the table.
+
+        A Create/Write/Delete permission is only exploitable through a channel:
+        the Web API (a direct ``POST``/``PATCH``/``DELETE``), or a basic/advanced
+        form that writes the table. With neither, the grant is dormant.
+        """
+        lowered = table.lower()
+        if webapi and webapi.enabled:
+            return ("api",
+                    "The Web API is enabled for this table, so a visitor can write to it "
+                    f"directly at /_api/{table}s with no page or form involved.")
+        forms = [f for f in model.entity_forms if f.table.lower() == lowered]
+        if forms:
+            form_ids = {f.id.lower() for f in forms}
+            placed = any((p.entity_form_id or "").lower() in form_ids for p in model.pages)
+            names = ", ".join(sorted({f.name for f in forms})[:4])
+            return ("form",
+                    f"A basic/advanced form ({names}) writes to this table"
+                    + (", placed on a site page" if placed else "")
+                    + ". Confirm that page is the intended public one, not gated content.")
+        return ("none",
+                "The Web API is off for this table and no form on the site writes to it, "
+                "so nothing exercises this permission today.")
+
     def _references_for(self, table: str, columns: list[str]):
         if self._index is None:
             return []
@@ -518,19 +594,38 @@ class DataverseAudit:
                                    on_anon, webapi, site, src) -> None:
         mutating = perm.mutating
         if mutating:
+            channel, channel_text = self._write_channel(model, perm.table, webapi)
+            severity, verdict = _anonymous_mutation_severity(perm.table, mutating, channel)
+            destructive = "Write" in mutating or "Delete" in mutating
+            title = ("Anonymous data modification permitted" if destructive
+                     else "Anonymous record creation permitted")
+            write_profiles = [p for p in model.profiles_for(perm.table)
+                              if any(r in on_anon for r in p.roles)]
+            col_note = ""
+            if write_profiles:
+                col_note = (" Column permission profiles bound to the anonymous role "
+                            f"({', '.join(p.name for p in write_profiles)}) scope which "
+                            "columns are writable — check them, not just the table grant.")
+            create_note = ("" if destructive else
+                           " Create adds records but reads none back, so it cannot be used "
+                           "to retrieve data — treat it as an integrity/abuse risk, not a "
+                           "data breach.")
             report.add(Finding(
-                Severity.CRITICAL, "Anonymous data modification permitted",
+                severity, title,
                 table=perm.table,
                 detail=(f"Table permission '{perm.name}' grants {', '.join(mutating)} on "
                         f"'{perm.table}' to anonymous web role(s) {', '.join(on_anon)} "
-                        f"with {perm.scope or 'unset'} scope. Unauthenticated visitors can "
-                        "change or destroy data. Critical regardless of scope."),
+                        f"with {perm.scope or 'unset'} scope.{create_note} {channel_text} "
+                        f"{verdict}{col_note}"),
                 source=src,
                 evidence={"permission": perm.name, "scope": perm.scope,
                           "privileges": ", ".join(perm.privileges()),
                           "roles": ", ".join(on_anon), "website": site,
+                          "write_channel": channel,
                           "config_record": model.record_url("entitypermission", perm.id),
-                          "webapi_enabled": bool(webapi and webapi.enabled)}))
+                          "webapi_enabled": bool(webapi and webapi.enabled),
+                          "column_profiles": ", ".join(p.name for p in write_profiles)
+                                             or "(none)"}))
 
         if not perm.read:
             return
@@ -764,6 +859,7 @@ class DataverseAudit:
         if not anon_readable:
             return
 
+        drafts: dict[str, set[str]] = {}
         for table in sorted(anon_readable):
             webapi = model.webapi_for(table)
             columns = webapi.field_list if webapi else []
@@ -773,8 +869,17 @@ class DataverseAudit:
             # table in four places is one thing to fix, not four.
             by_url: dict[str, list] = {}
             for ref in refs:
-                if ref.page_id and ref.url and not model.protecting_rules(ref.page_id):
-                    by_url.setdefault(ref.url, []).append(ref)
+                if not (ref.page_id and ref.url) or model.protecting_rules(ref.page_id):
+                    continue
+                page = model.page_by_id(ref.page_id)
+                if page and not page.live:
+                    # A page in a non-visible publishing state is not served to
+                    # visitors, so this is latent, not live. Grouped up below
+                    # rather than reported as an exposure that does not exist.
+                    label = f"{page.name} ({page.state or 'no publishing state'})"
+                    drafts.setdefault(label, set()).add(table)
+                    continue
+                by_url.setdefault(ref.url, []).append(ref)
 
             for url, hits in sorted(by_url.items()):
                 ref = hits[0]
@@ -838,6 +943,23 @@ class DataverseAudit:
                         "query": ref.block or ref.snippet,
                     }))
 
+        if drafts:
+            tables = sorted({t for ts in drafts.values() for t in ts})
+            report.add(Finding(
+                Severity.LOW, "Unpublished pages would expose data once published",
+                detail=(f"{len(drafts)} page(s) query anonymously-readable table(s) and "
+                        "have no page permission, but their publishing state is not a "
+                        "visible one, so the site does not serve them to visitors "
+                        "today. They are one publishing-state change away from being "
+                        "live exposure, and that change is routine content work rather "
+                        "than a security decision. Add the page permission now, while "
+                        "it costs nothing: "
+                        + "; ".join(f"{page} → {', '.join(sorted(ts))}"
+                                    for page, ts in sorted(drafts.items())[:8])
+                        + ("…" if len(drafts) > 8 else "") + "."),
+                source=src,
+                evidence={"pages": len(drafts), "tables": ", ".join(tables)}))
+
     def _analyse_forms(self, report: Report, model: SchemaModel) -> None:
         """Entity and web forms are the write channel; unprotected ones accept input."""
         src = f"dataverse:{model.generation}"
@@ -852,7 +974,8 @@ class DataverseAudit:
 
         for form in model.entity_forms:
             hosted = pages_by_form.get(form.id.lower(), [])
-            open_pages = [p for p in hosted if not model.protecting_rules(p.id)]
+            open_pages = [p for p in hosted
+                          if p.live and not model.protecting_rules(p.id)]
             mode = (form.mode or "unknown").lower()
             writes = mode in ("insert", "edit") or mode == "unknown"
             if not (writes and open_pages):
@@ -889,7 +1012,8 @@ class DataverseAudit:
             return
 
         open_files = [f for f in model.files
-                      if not f.parent_page_id or not model.protecting_rules(f.parent_page_id)]
+                      if f.live and (not f.parent_page_id
+                                     or not model.protecting_rules(f.parent_page_id))]
         if not open_files:
             return
         report.add(Finding(
@@ -991,7 +1115,7 @@ class DataverseAudit:
             entry = NOTABLE_SETTINGS.get(setting.name.lower())
             if not entry:
                 continue
-            risky_values, why = entry
+            risky_values, why, impact = entry
             if setting.value.strip().lower() not in risky_values:
                 continue
             report.add(Finding(
@@ -999,6 +1123,7 @@ class DataverseAudit:
                 detail=f"{setting.name} = {setting.value}. {why}",
                 source=src,
                 evidence={"setting": setting.name, "value": setting.value,
+                          "impact": impact,
                           "website": model.website_name(setting.website_id)}))
 
     # --- correlation ---------------------------------------------------------

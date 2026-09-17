@@ -56,6 +56,9 @@ class PublishedResource(NamedTuple):
     path: str
     url: str
     record_url: str
+    orphan: bool = False
+    state: str = ""       # publishing state label, e.g. "Draft" / "Published"
+    live: bool = True     # its publishing state is a visible one
 
 
 # --- field resolution --------------------------------------------------------
@@ -284,7 +287,13 @@ class WebPage:
     entity_form_id: str = ""
     web_form_id: str = ""
     website_id: str = ""
+    is_root: bool = False   # the canonical page; language variants point back to it
+    root_page_id: str = ""  # set on a language-variant content page
+    language: str = ""      # website language of a content page, when known
     path: str = ""          # resolved from the parent chain
+    state_id: str = ""      # publishing state lookup
+    state: str = ""         # its label, e.g. "Draft" / "Published"
+    live: bool = True       # resolved from the state's Is Visible flag
 
 
 @dataclass
@@ -322,6 +331,24 @@ class WebFile:
     partial_url: str = ""
     parent_page_id: str = ""
     website_id: str = ""
+    state_id: str = ""
+    state: str = ""
+    live: bool = True
+
+
+@dataclass
+class PublishingState:
+    """A content lifecycle state. ``is_visible`` decides whether it is served.
+
+    Sites rename these and add their own, so "Published" is not a reliable
+    name to match on — the Is Visible flag is what the site acts on.
+    """
+
+    id: str
+    name: str
+    is_visible: bool = True
+    is_default: bool = False
+    website_id: str = ""
 
 
 @dataclass
@@ -356,6 +383,7 @@ class SchemaModel:
     page_templates: list[PageTemplate] = field(default_factory=list)
     snippets: list[ContentSnippet] = field(default_factory=list)
     files: list[WebFile] = field(default_factory=list)
+    publishing_states: list[PublishingState] = field(default_factory=list)
     errors: dict[str, str] = field(default_factory=dict)
 
     # --- convenience views ---------------------------------------------------
@@ -442,22 +470,75 @@ class SchemaModel:
                 f"&etn={logical}&id={record_id}")
 
     def published_pages(self, base_url: str = "") -> list[PublishedResource]:
-        """Every web page the site serves, with its resolved live URL.
+        """Every web page the site serves, one row per canonical (root) page.
+
+        Multi-language sites store one *root* page plus a *content* page per
+        language, all sharing a URL; listing every content page would show the
+        same address many times, so only root pages are emitted (with the
+        standard model, where the split does not exist, every page is a root).
+        A page whose parent record is missing, or that hangs off no parent and
+        is not the home page, is flagged as an orphan: reachable at its URL but
+        absent from the site's navigation.
 
         Paths come from :meth:`resolve_page_paths`; without a ``base_url`` the URL
         is the site-relative path, still clickable once a domain is known.
         """
         base = (base_url or "").rstrip("/")
+
+        def url_of(path: str) -> str:
+            return f"{base}{path}" if base else path
+
+        roots = [p for p in self.pages if p.is_root]
+        canonical = roots or list(self.pages)      # fall back if isroot is unset
+        ids = {p.id.lower() for p in canonical if p.id}
+
+        # Content pages are language variants of a root page. Where their root
+        # still exists they collapse into it (counted, not repeated); where it is
+        # gone they are orphans — reachable at a URL that belongs to no live page.
+        variants: dict[str, int] = {}
+        detached: list[WebPage] = []
+        for p in self.pages:
+            if p.is_root:
+                continue
+            root = (p.root_page_id or "").lower()
+            if root and root in ids:
+                variants[root] = variants.get(root, 0) + 1
+            elif roots:
+                detached.append(p)
+
         out = []
-        for page in self.pages:
+        seen_paths: set[str] = set()
+        for page in canonical:
             path = page.path or "/"
+            seen_paths.add(path.lower())
+            parent = (page.parent_id or "").lower()
+            is_home = not parent and path == "/"
+            orphan = bool((parent and parent not in ids) or (not parent and not is_home))
+            # Each content page is one language; the root itself is structural,
+            # not a language. Only note it when the page is genuinely translated.
+            langs = variants.get(page.id.lower(), 0)
+            name = page.title or page.name
+            if langs > 1:
+                name = f"{name} ({langs} languages)"
             out.append(PublishedResource(
-                kind="Web page",
-                name=page.title or page.name,
-                path=path,
-                url=f"{base}{path}" if base else path,
-                record_url=self.record_url("webpage", page.id)))
-        return sorted(out, key=lambda r: r.path.lower())
+                kind="Web page", name=name, path=path, url=url_of(path),
+                record_url=self.record_url("webpage", page.id), orphan=orphan,
+                state=page.state, live=page.live))
+
+        # Surface each detached variant once per distinct URL, and only where no
+        # live page already serves that URL.
+        for page in detached:
+            path = page.path or "/"
+            if path.lower() in seen_paths:
+                continue
+            seen_paths.add(path.lower())
+            out.append(PublishedResource(
+                kind="Web page", name=f"{page.title or page.name} (detached variant)",
+                path=path, url=url_of(path),
+                record_url=self.record_url("webpage", page.id), orphan=True,
+                state=page.state, live=page.live))
+
+        return sorted(out, key=lambda r: (not r.orphan, r.path.lower()))
 
     def published_files(self, base_url: str = "") -> list[PublishedResource]:
         """Every web file the site serves, at ``<parent page path>/<partial url>``."""
@@ -474,7 +555,8 @@ class SchemaModel:
                 name=f.name,
                 path=path,
                 url=f"{base}{path}" if base else path,
-                record_url=self.record_url("webfile", f.id)))
+                record_url=self.record_url("webfile", f.id),
+                state=f.state, live=f.live))
         return sorted(out, key=lambda r: r.path.lower())
 
     def content_sources(self, base_url: str = "") -> list[ContentSource]:
@@ -649,8 +731,10 @@ class ConfigLoader:
         self._load_settings(model)
         self._load_entity_lists(model)
         self._load_entity_forms(model)
+        self._load_publishing_states(model)
         self._load_content(model)
         model.resolve_page_paths()
+        self._resolve_publishing(model)
         self._load_page_rules(model)
         return model
 
@@ -792,6 +876,30 @@ class ConfigLoader:
                 mode=self.r.label(row, "form_mode"),
                 website_id=self.r.text(row, "website_ref")))
 
+    def _load_publishing_states(self, model: SchemaModel) -> None:
+        for row in self._fetch(model, "publishingstate"):
+            model.publishing_states.append(PublishingState(
+                id=self.r.text(row, "pubstate_id"),
+                name=self.r.text(row, "pubstate_name", "(unnamed state)"),
+                is_visible=self.r.flag(row, "pubstate_visible"),
+                is_default=self.r.flag(row, "pubstate_default"),
+                website_id=self.r.text(row, "website_ref")))
+
+    def _resolve_publishing(self, model: SchemaModel) -> None:
+        """Decide which pages and files the site actually serves.
+
+        Content in a non-visible state (stock: Draft) is shown only to content
+        authors in preview, so it cannot be leaking to the public today. Content
+        whose state cannot be read is treated as live: the audit must never hide
+        a real exposure because a lookup was missing.
+        """
+        visible = {s.id.lower(): s.is_visible for s in model.publishing_states}
+        names = {s.id.lower(): s.name for s in model.publishing_states}
+        for item in [*model.pages, *model.files]:
+            key = (item.state_id or "").lower()
+            item.live = visible.get(key, True)
+            item.state = item.state or names.get(key, "")
+
     def _load_page_rules(self, model: SchemaModel) -> None:
         nav = self.nav["webpageaccessrule_webrole"]
         role_field = self.r.candidates("role_name")[0]
@@ -824,6 +932,11 @@ class ConfigLoader:
                 entity_list_id=self.r.text(row, "page_entitylist_ref"),
                 entity_form_id=self.r.text(row, "page_entityform_ref"),
                 web_form_id=self.r.text(row, "page_webform_ref"),
+                is_root=self.r.flag(row, "page_isroot"),
+                root_page_id=self.r.text(row, "page_rootpage_ref"),
+                language=self.r.text(row, "page_language_label"),
+                state_id=self.r.text(row, "page_publishingstate_ref"),
+                state=self.r.text(row, "page_publishingstate_label"),
                 website_id=self.r.text(row, "website_ref")))
 
         for row in self._fetch(model, "webtemplate"):
@@ -853,4 +966,6 @@ class ConfigLoader:
                 name=self.r.text(row, "file_name", "(unnamed file)"),
                 partial_url=self.r.text(row, "file_partialurl"),
                 parent_page_id=self.r.text(row, "file_parentpage"),
+                state_id=self.r.text(row, "file_publishingstate_ref"),
+                state=self.r.text(row, "file_publishingstate_label"),
                 website_id=self.r.text(row, "website_ref")))

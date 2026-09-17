@@ -14,6 +14,11 @@ external leak is tied to the configuration that causes it.
 > engaged to assess (pentest, breach investigation, internal audit). Only scan
 > or authenticate against systems you have permission to test.
 
+![The HTML report for a demo site: severity counts and the critical findings requiring action](mockup/_img/overview.png)
+
+*Every screenshot in this README is of a fictional Contoso site — see
+[Sample report](#sample-report).*
+
 ## The three parts
 
 | Command | View | What it does |
@@ -36,7 +41,10 @@ Reproduces the power-pwn technique and extends it:
 - Reports **how many rows are reachable** (`$count`), not just yes/no.
 - On a table-permission error (Web API code `90040101`), falls back to
   **per-column probing** to catch partial column-level leaks.
-- Runs probes **concurrently** with optional rate limiting and retries.
+- Runs probes **concurrently**, with optional rate limiting for politeness. A
+  probe that never gets an answer is recorded as untested rather than passed:
+  where nothing answers at all, the scan says so instead of reporting a clean
+  site.
 - Optional `--header 'Cookie: ...'` re-runs the scan as an authenticated portal
   user, to compare the anonymous and signed-in surfaces.
 
@@ -52,6 +60,11 @@ Connects to the Dataverse Web API and reconstructs the exposure model:
   `Webapi/<entity>/fields`.
 - **Page permissions** — web page access control rules, resolved *through the
   page hierarchy* so inherited protection is not mistaken for an open page.
+- **Publishing state** — pages and files in a non-visible state (stock: Draft)
+  are not served to visitors, so they are reported as latent rather than live
+  exposure: one publishing-state change away, which is routine content work
+  rather than a security decision. Visibility is read from the state's Is
+  Visible flag, since states can be renamed and added.
 - **Rendered content** — Liquid web templates, page copy and scripts, content
   snippets and entity list FetchXML, to find which pages actually query a table.
 - **Entity forms and web files** — the write channel, and published files that
@@ -215,7 +228,7 @@ Python 3.10+.
 
 ```bash
 pip install -e '.[dev]'
-pytest                    # 84 offline tests
+pytest                    # the offline suite; no network, no live environment
 pytest -m network         # additionally verifies every Microsoft Learn link resolves
 ```
 
@@ -226,16 +239,39 @@ scoping, name truncation, and HTML escaping.
 
 ## Usage
 
-The usual way: describe the environments once in `instances.yaml`, keep the
-secrets in `.env`, then run with no arguments.
+The quickest start is to run it with nothing at all and answer the questions:
+
+```bash
+python -m ppaudit
+```
+
+It asks what to do (scan and audit, scan only, audit only, tidy names), which
+site when `instances.yaml` lists more than one, and whether to save a report —
+then prints the full command it is running, so you learn the flags as you go.
+Any subcommand asks for whatever its flags leave out in the same way:
+`python -m ppaudit scan` with two sites configured asks which one.
+
+Prompts appear only at a terminal. Piped and scheduled runs (CI, an agent)
+never prompt and audit every configured instance, as before. Choose sites up
+front with `--instance NAME` (repeatable; the name or its slug), or suppress
+questions from a terminal with `--no-input`.
+
+The usual scripted way: describe the environments once in `instances.yaml`,
+keep the secrets in `.env`, then run with no arguments.
 
 ```bash
 python -m ppaudit full --markdown reports/audit.md --json reports/audit.json
 ```
 
-Every instance in the file is audited in turn. With more than one instance the
-output paths get the instance slug appended (`audit-production.md`), so runs do
-not overwrite each other.
+Every instance in the file is audited in turn. Each one writes into its own
+folder, created as needed, with the run time in the filename — so a later run
+never replaces an earlier one and two sites never collide:
+
+```text
+reports/
+  contoso-production/audit-20260916-142530.html
+  contoso-test/audit-20260916-142530.html
+```
 
 `instances.yaml` (auto-discovered in the working directory, or `--instances PATH`):
 
@@ -310,8 +346,71 @@ write:
 - `--json PATH` — full findings + context, for diffing audits over time.
 - `--html PATH` — a shareable, theme-aware report.
 
+The path you give is a template, not the final name: the instance slug becomes a
+folder under it and the run time is added to the stem, so `--json
+reports/audit.json` lands at `reports/<instance>/audit-<YYYYMMDD-HHMMSS>.json`.
+Reports are evidence of how a site looked at a moment, so nothing is overwritten
+and the history is kept. A target given as a bare `--url` / `--org-url` is named
+after its host.
+
+Where the evidence settles it, a summary line carries a second badge saying what
+already limits the finding — **Confirmed exposed** (the scanner read it from the
+internet), **Not mitigated** (a queryable `/_api` channel, a visitor-steered
+query, or a live write channel), **Partly mitigated** (reachable only through a
+page or a form, which bounds what comes back), or **Mitigated** (a filter bounds
+the query, or nothing exercises the permission). Findings whose evidence does not
+settle the question carry no badge rather than a reassuring guess. Each line also
+carries the reason in short form (`queryable on /_api`, `bounded by a FetchXML
+filter`, `no filter in the query`), and findings that name a page show its URL.
+Severity already accounts for all of it; the badge is there so a page of red does
+not stop a reader on the first line.
+
 Exit code is non-zero when any finding is **High** or above, so the tool can
 gate a CI pipeline.
+
+### Sample report
+
+[`mockup/sample_report.html`](mockup/sample_report.html) (with matching
+[Markdown](mockup/sample_report.md) and [JSON](mockup/sample_report.json)) is
+the output for a fictional Contoso site. Download the HTML and open it to explore
+every tab.
+
+The headline finding: a public page renders personal data, no page permission
+covers it, and the Web API makes the table directly queryable. The finding
+carries the live URL, both Dataverse records to edit, and the query as written.
+
+![A Critical finding showing the page URL, the evidence, and the FetchXML query](mockup/_img/finding.png)
+
+**Anonymous access** lists everything bound to an Anonymous Users role — scope,
+privileges, and which columns the Web API actually publishes.
+
+![Anonymous access table listing tables, permissions, scope and reachable columns](mockup/_img/anonymous-access.png)
+
+**Where rendered** traces each table to the template or page that queries it,
+and flags queries a visitor can steer through request parameters.
+
+![A web template reference flagged as taking visitor input, with its query expanded](mockup/_img/where-rendered.png)
+
+**Published URLs** records what an anonymous request to each page, file and data
+endpoint actually returned, next to the configuration that should govern it.
+
+![Published URLs with open, gated and not-found results, and data endpoint results](mockup/_img/published-urls.png)
+
+**Configuration** is the inventory a reviewer checks against intent: web roles and
+what each carries, every table permission with its scope and bound roles, the Web
+API site settings, and the column permission profiles. Record names link straight
+to the Dataverse record.
+
+![Configuration inventory listing web roles, table permissions and Web API settings](mockup/_img/configuration.png)
+
+The site is invented and nothing real is contacted: the configuration is fed
+through the real audit and report code with only the network calls stubbed. To
+regenerate after changing a renderer:
+
+```bash
+python mockup/build_mockup.py   # sample_report.html / .md / .json
+python mockup/capture.py        # screenshots into mockup/_img/ (needs playwright + Chrome)
+```
 
 ## How exposure actually works (reference)
 
@@ -345,9 +444,15 @@ ppaudit/
   report.py      findings model; console / JSON renderers
   markdown.py    the Markdown review document
   htmlreport.py  the Fluent 2 HTML report
+  pageprobe.py   anonymous reachability probe of published URLs and endpoints
+  versions.py    Microsoft's published release list, for the version comparison
+  prompts.py     terminal prompts for anything the command line left unsaid
   cli.py         argparse CLI (scan | audit | full | naming)
 skills/
   powerpages-exposure-audit/   agent skill: run, interpret, remediate
+mockup/
+  build_mockup.py  builds the sample reports from a fictional site
+  capture.py       screenshots the sample HTML report for this README
 ```
 
 ## Agent skill

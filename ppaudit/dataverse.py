@@ -142,6 +142,25 @@ class DataverseClient:
             return None
         return None
 
+    def entity_set_names(self) -> dict[str, str]:
+        """Map each table's logical name to its Web API entity-set name.
+
+        The Web API and OData paths address a table by its *entity set* name
+        (``contacts``), not its logical name (``contact``); the two differ by
+        more than an ``s`` for irregular plurals, so the mapping has to come
+        from the environment rather than be guessed.
+        """
+        out: dict[str, str] = {}
+        try:
+            for row in self.get("EntityDefinitions", "$select=LogicalName,EntitySetName"):
+                logical = row.get("LogicalName")
+                entity_set = row.get("EntitySetName")
+                if logical and entity_set:
+                    out[logical] = entity_set
+        except DataverseError:
+            pass
+        return out
+
     def portal_solutions(self) -> list[dict[str, Any]]:
         """Installed Power Pages solutions and their versions.
 

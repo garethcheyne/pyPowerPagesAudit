@@ -134,10 +134,27 @@ def _summary(report: Report, n: int) -> list[str]:
 
     critical = [f for f in report.sorted() if f.severity >= Severity.HIGH]
     if critical:
-        lines += ["### Issues requiring action", ""]
+        lines += ["### Issues requiring action", "",
+                  "Where the evidence settles it, a finding is marked **Confirmed "
+                  "exposed** (the scanner read it from the internet), **Not mitigated** "
+                  "(a queryable `/_api` channel, a visitor-steered query, or a live write "
+                  "channel), **Partly mitigated** (reachable only through a page or a "
+                  "form, which bounds what comes back) or **Mitigated** (a filter bounds "
+                  "the query, or nothing exercises the permission). Findings with no "
+                  "marking are ones the evidence does not settle — read them. The note "
+                  "after each says what the verdict rests on, and findings that name a "
+                  "page show its URL. Severity already accounts for all of this.", ""]
         for finding in critical[:15]:
-            where = f" — `{finding.table}`" if finding.table else ""
-            lines.append(f"- **[{finding.severity.label}]** {finding.title}{where}")
+            where = f" — `{finding.subject}`" if finding.subject else ""
+            label, _kind = finding.mitigation
+            state = f" **{label}.**" if label else ""
+            qualifiers = finding.qualifiers
+            note = f" _({'; '.join(qualifiers)})_" if qualifiers else ""
+            url = str(finding.evidence.get("url") or "")
+            link = f"  \n  <{url}>" if url.startswith("http") else ""
+            lines.append(
+                f"- **[{finding.severity.label}]** {finding.title}{where}"
+                f"{state}{note}{link}")
         if len(critical) > 15:
             lines.append(f"- _…and {len(critical) - 15} more; see the findings section._")
         lines.append("")
@@ -419,7 +436,7 @@ def _findings(report: Report, n: int) -> list[str]:
         if finding.severity != current:
             current = finding.severity
             lines += [f"### {current.label}", ""]
-        where = f" — `{finding.table}`" if finding.table else ""
+        where = f" — `{finding.subject}`" if finding.subject else ""
         lines.append(f"#### {finding.title}{where}")
         lines.append("")
         if finding.detail:

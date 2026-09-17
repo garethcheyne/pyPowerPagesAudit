@@ -60,6 +60,14 @@ def _badge(severity: Severity) -> str:
             f'{_esc(severity.label)}</span>')
 
 
+def _mit_badge(finding) -> str:
+    """Say up front whether something already limits a finding."""
+    label, kind = finding.mitigation
+    if not label:
+        return ""
+    return f'<span class="mit mit-{_esc(kind)}">{_esc(label)}</span>'
+
+
 def _code(value: Any) -> str:
     return f"<code>{_esc(value)}</code>" if value not in (None, "") else ""
 
@@ -140,50 +148,40 @@ def _header(report: Report) -> str:
     generations = ctx.get("config_generations", [])
     published = ctx.get("published_release") or {}
 
-    # Grouped by the question each value answers: what was audited, what it runs
-    # on, and how the audit was performed. A flat list of seven values makes the
-    # reader do that sorting themselves.
-    groups: list[tuple[str, list[tuple[str, str]]]] = [
-        ("Site", [
-            ("Portal", f'<a href="{_esc(ctx["portal_url"])}" target="_blank" '
-                       f'rel="noopener noreferrer">{_esc(ctx["portal_url"])}</a>'
-             if ctx.get("portal_url") else ""),
-            ("Primary domain", _code(domains[0]) if domains else ""),
-        ]),
-        ("Environment", [
-            ("Dataverse", _code(ctx.get("dataverse_url") or report.target)),
-            ("Power Pages version",
-             (f'{_code(ctx["portal_version"])}'
-              f'<span class="meta-note">{_esc(ctx.get("portal_version_source", ""))}'
-              "</span>") if ctx.get("portal_version") else ""),
-            ("Latest release",
-             (f'{_code(published["version"])}'
-              f'<span class="meta-note">published by Microsoft</span>')
-             if published else ""),
-            ("Configuration model",
-             ", ".join(f'{_esc(g["label"])} <code>{_esc(g["generation"])}_*</code>'
-                       for g in generations)),
-        ]),
-        ("This audit", [
-            ("Run", _timestamp(report.started)),
-            ("Identity", _code(ctx["whoami"]) if ctx.get("whoami") else ""),
-            ("Content scanned",
-             (f'{_esc(ctx["content_sources_scanned"])}'
-              '<span class="meta-note">templates, pages, snippets, lists</span>')
-             if ctx.get("content_sources_scanned") else ""),
-        ]),
-    ]
+    def _titled_code(value: str) -> str:
+        """A code chip that shows its full value on hover, since cells truncate."""
+        return f'<code title="{_esc(value)}">{_esc(value)}</code>' if value else ""
 
-    blocks = []
-    for title, items in groups:
-        rendered = [(label, value) for label, value in items if value]
-        if not rendered:
-            continue
-        body = "".join(
-            f'<div class="meta-item"><dt>{_esc(label)}</dt><dd>{value}</dd></div>'
-            for label, value in rendered)
-        blocks.append(f'<section class="meta-group"><h2>{_esc(title)}</h2>'
-                      f'<dl>{body}</dl></section>')
+    portal = ctx.get("portal_url") or ""
+    dataverse = ctx.get("dataverse_url") or report.target
+    version = (f'{_titled_code(ctx["portal_version"])}'
+               f'<span class="meta-note">{_esc(ctx.get("portal_version_source", ""))}</span>'
+               ) if ctx.get("portal_version") else ""
+    latest = (f'{_titled_code(published["version"])}'
+              f'<span class="meta-note">latest from Microsoft</span>') if published else ""
+    config_model = ", ".join(
+        f'{_esc(g["label"])} <code>{_esc(g["generation"])}_*</code>' for g in generations)
+    content = (f'{_esc(ctx["content_sources_scanned"])}'
+               '<span class="meta-note">templates, pages, snippets, lists</span>'
+               ) if ctx.get("content_sources_scanned") else ""
+
+    # One flat, uniform grid, ordered site -> environment -> this audit. No group
+    # sub-columns: they forced long URLs into narrow cells that broke mid-word.
+    items: list[tuple[str, str]] = [
+        ("Portal", f'<a href="{_esc(portal)}" title="{_esc(portal)}" target="_blank" '
+                   f'rel="noopener noreferrer">{_esc(portal)}</a>' if portal else ""),
+        ("Primary domain", _titled_code(domains[0]) if domains else ""),
+        ("Dataverse", _titled_code(dataverse)),
+        ("Power Pages version", version),
+        ("Latest release", latest),
+        ("Configuration model", config_model),
+        ("Run", _timestamp(report.started)),
+        ("Identity", _titled_code(ctx["whoami"]) if ctx.get("whoami") else ""),
+        ("Content scanned", content),
+    ]
+    meta_body = "".join(
+        f'<div class="meta-item"><dt>{_esc(label)}</dt><dd>{value}</dd></div>'
+        for label, value in items if value)
 
     instance = ctx.get("instance") or "Power Pages exposure audit"
     counts = report.counts()
@@ -205,7 +203,7 @@ def _header(report: Report) -> str:
   </div>
   <p class="lede">What an unauthenticated visitor can reach through this site,
      and the configuration that allows it. Highest severity: {_esc(verdict)}.</p>
-  <div class="meta">{"".join(blocks)}</div>
+  <dl class="meta">{meta_body}</dl>
 </header>"""
 
 
@@ -282,15 +280,38 @@ def _summary(report: Report) -> str:
             f'<div class="stat-value">{count}</div>'
             f'<div class="stat-label">{_esc(severity.label)}</div></div>')
     actionable = [f for f in report.sorted() if f.severity >= Severity.MEDIUM]
+    def _act_url(finding) -> str:
+        url = str(finding.evidence.get("url") or "")
+        if not url.startswith("http"):
+            return ""
+        return (f'<a class="act-url" href="{_esc(url)}" target="_blank" '
+                f'rel="noopener noreferrer" title="Open the live page">{_esc(url)}</a>')
+
     items = "".join(
-        f'<li>{_badge(f.severity)} <span class="act-title">{_esc(f.title)}</span>'
-        f'{" " + _code(f.table) if f.table else ""}</li>'
+        f'<li>{_badge(f.severity)}{_mit_badge(f)}'
+        f'<span class="act-title">{_esc(f.title)}</span>'
+        f'{" " + _code(f.subject) if f.subject else ""}'
+        + "".join(f'<span class="qual">{_esc(q)}</span>' for q in f.qualifiers)
+        + _act_url(f)
+        + "</li>"
         for f in actionable) or '<li class="empty">Nothing at Medium or above.</li>'
     return f"""
 <section id="summary" class="card">
   <h2>Summary</h2>
   <div class="stats">{"".join(cards)}</div>
   <h3>Requiring action</h3>
+  <p class="muted">Where the evidence settles it, a row carries a second badge
+     saying what already limits it:
+     <span class="mit mit-open">Confirmed exposed</span> the scanner read it from
+     the internet, <span class="mit mit-open">Not mitigated</span> a queryable
+     <code>/_api</code> channel, a visitor-steered query, or a live write channel,
+     <span class="mit mit-partial">Partly mitigated</span> reachable only through
+     a page or a form, which bounds what comes back,
+     <span class="mit mit-ok">Mitigated</span> a filter bounds the query, or
+     nothing exercises the permission. Rows with no badge are ones the evidence
+     does not settle — open the finding. The grey notes say what each verdict
+     rests on, and findings that name a page show its URL. Severity already
+     accounts for all of this.</p>
   <ul class="action-list">{items}</ul>
 </section>"""
 
@@ -419,9 +440,9 @@ def _findings(report: Report) -> str:
             detail = _linkify(f.detail).replace("\n", "<br>") if f.detail else ""
             cards.append(
                 f'<article class="finding {_sev_class(severity)}">'
-                f'<div class="finding-head">{_badge(severity)}'
+                f'<div class="finding-head">{_badge(severity)}{_mit_badge(f)}'
                 f'<h4>{_esc(f.title)}</h4>'
-                f'{_code(f.table)}'
+                f'{_code(f.subject)}'
                 f'<span class="src">{_esc(f.source)}</span></div>'
                 f'<p class="finding-detail">{detail}</p>{evidence}'
                 f'{_doc_links(f.title)}</article>')
@@ -511,6 +532,15 @@ def _configuration(report: Report) -> str:
 </section>"""
 
 
+def _state_pill(resource) -> str:
+    """Flag content the site does not serve because of its publishing state."""
+    if getattr(resource, "live", True):
+        return ""
+    label = getattr(resource, "state", "") or "not published"
+    return (f' <span class="pill" title="Publishing state is not a visible one, so '
+            f'the site does not serve this to visitors">{_esc(label)}</span>')
+
+
 def _published(report: Report) -> str:
     """Live URLs the site serves: web pages, web files, and data endpoints.
 
@@ -532,54 +562,117 @@ def _published(report: Report) -> str:
     def url_cell(url: str) -> str:
         return _link(url, url, "Open in a new tab") if url else '<span class="muted">—</span>'
 
+    probes = ctx.get("url_probes") or {}
+    _verdict_pill = {"open": "warn", "gated": "ok", "not found": "", "error": ""}
+
+    def anon_cell(url: str) -> str:
+        p = probes.get(url)
+        if not p:
+            return '<span class="muted">—</span>'
+        verdict = p.get("verdict", "")
+        status = p.get("status")
+        kind = _verdict_pill.get(verdict, "")
+        label = verdict + (f" {status}" if status and verdict in ("open", "error") else "")
+        title = f"HTTP {status} — anonymous GET landed on {p.get('final_path', '')}"
+        cls = f"pill {kind}".strip()
+        return f'<span class="{cls}" title="{_esc(title)}">{_esc(label)}</span>'
+
     pages = [r for m in models for r in m.published_pages(base)]
     files = [r for m in models for r in m.published_files(base)]
+    orphans = sum(1 for r in pages if r.orphan)
+
+    def probe_summary(rows) -> str:
+        if not probes:
+            return ""
+        tally: dict[str, int] = {}
+        for r in rows:
+            v = (probes.get(r.url) or {}).get("verdict")
+            if v:
+                tally[v] = tally.get(v, 0) + 1
+        if not tally:
+            return ""
+        order = ["open", "gated", "not found", "error"]
+        parts = " · ".join(f"{tally[v]} {v}" for v in order if v in tally)
+        return f'<p class="muted">Anonymous probe: {parts}.</p>'
 
     pages_table = _table(
-        ["Page", "Path", "URL", "Dataverse"],
-        [[_esc(r.name), _code(r.path), url_cell(r.url),
+        ["Page", "Path", "URL", "Anonymous", "Dataverse"],
+        [[_esc(r.name)
+          + (' <span class="pill warn" title="No parent page — reachable by URL but '
+             'not in the site navigation">orphan</span>' if r.orphan else "")
+          + _state_pill(r),
+          _code(r.path), url_cell(r.url), anon_cell(r.url),
           _link("record", r.record_url, "Open the web page record in Dataverse")
           or '<span class="muted">—</span>']
          for r in pages],
         "No web pages found in the configuration.")
 
     files_table = _table(
-        ["File", "URL", "Dataverse"],
-        [[_esc(r.name), url_cell(r.url),
+        ["File", "URL", "Anonymous", "Dataverse"],
+        [[_esc(r.name) + _state_pill(r), url_cell(r.url), anon_cell(r.url),
           _link("record", r.record_url, "Open the web file record in Dataverse")
           or '<span class="muted">—</span>']
          for r in files],
         "No web files found in the configuration.")
 
-    # Data endpoints: the outside-in URLs a tester clicks to confirm exposure.
+    # Data endpoints. When the anonymous probe ran, the verdict is what each URL
+    # actually returned; each row is a real GET, not a guess from configuration.
     endpoint_base = base or report.target.rstrip("/")
-    endpoint_rows: list[list[str]] = []
-    seen: set[tuple[str, str]] = set()
+    probed_eps = ctx.get("endpoint_probes") or []
+    _ep_pill = {"leak": "danger", "denied": "ok", "reachable (no rows)": "warn",
+                "reachable anonymously": "warn", "unavailable": "", "not found": "",
+                "error": ""}
 
-    def add_endpoint(table: str, surface: str, path: str, status: str, cls: str = "") -> None:
-        key = (table, path)
-        if key in seen:
-            return
-        seen.add(key)
-        url = f"{endpoint_base}{path}" if endpoint_base else path
-        endpoint_rows.append([_code(table), _esc(surface), url_cell(url), _pill(status, cls)])
+    def ep_result_cell(e: dict) -> str:
+        verdict = e.get("verdict", "")
+        status = e.get("status")
+        kind = _ep_pill.get(verdict, "")
+        cls = f"pill {kind}".strip()
+        title = f"HTTP {status} — {e.get('note', '')}"
+        return f'<span class="{cls}" title="{_esc(title)}">{_esc(verdict)}</span>'
 
-    if endpoint_base and (ctx.get("discovered_tables") or ctx.get("anon_exposed_tables")):
-        add_endpoint("$metadata", "OData schema", "/_odata/$metadata",
-                     "readable" if ctx.get("discovered_tables") else "probed")
-    for table in ctx.get("anon_exposed_tables") or []:
-        add_endpoint(table, "Web API", f"/_api/{table}", "confirmed leak", "danger")
-        add_endpoint(table, "OData feed", f"/_odata/{table}", "confirmed leak", "danger")
-    for model in models:
-        for w in getattr(model, "webapi", []):
-            if getattr(w, "enabled", False):
-                add_endpoint(w.entity, "Web API", f"/_api/{w.entity}", "enabled", "warn")
+    if probed_eps:
+        endpoint_rows = [
+            [_code(e["table"]), _esc(e["surface"]), url_cell(e["url"]), ep_result_cell(e)]
+            for e in probed_eps]
+        endpoint_count = len(probed_eps)
+        endpoints_intro = (
+            "Each row is an anonymous GET against the live endpoint. "
+            "<code>leak</code> returned rows with no sign-in; <code>denied</code> "
+            "answered but refused the read; <code>reachable (no rows)</code> is "
+            "permitted but empty right now; <code>unavailable</code> means that "
+            "surface is switched off site-wide.")
+    else:
+        # Fallback when probing was skipped (--no-probe): configuration only.
+        endpoint_rows = []
+        seen: set[tuple[str, str]] = set()
+
+        def add_endpoint(table, surface, path, status, cls=""):
+            key = (table, path)
+            if key in seen:
+                return
+            seen.add(key)
+            url = f"{endpoint_base}{path}" if endpoint_base else path
+            endpoint_rows.append([_code(table), _esc(surface), url_cell(url),
+                                  _pill(status, cls)])
+
+        for model in models:
+            for w in getattr(model, "webapi", []):
+                if getattr(w, "enabled", False):
+                    add_endpoint(w.entity, "Web API", f"/_api/{w.entity}", "enabled", "warn")
+        endpoint_count = len(endpoint_rows)
+        endpoints_intro = ("Web API surfaces enabled in configuration. Run without "
+                           "<code>--no-probe</code> to test what each actually returns.")
 
     endpoints_table = _table(
-        ["Table", "Surface", "URL", "Status"],
+        ["Table", "Surface", "URL", "Anonymous result"],
         endpoint_rows,
-        "No data endpoints were confirmed reachable and none are enabled in config.")
+        "No data endpoints enabled in configuration, and none confirmed reachable.")
 
+    orphan_note = (f' <span class="tab-count">{orphans} orphaned</span>'
+                   if orphans else "")
+    pages_probe_summary = probe_summary(pages)
+    files_probe_summary = probe_summary(files)
     note = ("" if endpoint_base else
             '<p class="callout warn">No portal URL is known for this run, so URLs are '
             'shown as site-relative paths. Prefix them with the site domain to open them.</p>')
@@ -591,14 +684,24 @@ def _published(report: Report) -> str:
      files it hosts, and the data endpoints an unauthenticated caller can hit.
      Every link opens the live resource so you can see exactly what it returns.</p>
   {note}
-  <h3>Web pages <span class="count">{len(pages)}</span></h3>
+  <h3>Web pages <span class="count">{len(pages)}</span>{orphan_note}</h3>
+  <p>One row per canonical page; language variants of the same page share a URL
+     and are counted, not repeated. An <code>orphan</code> page has no parent, so
+     it is reachable at its URL but does not appear in the site navigation —
+     worth confirming each is meant to be public. <strong>Anonymous</strong> is
+     what an unauthenticated GET actually returned: <code>open</code> = 200 with
+     no sign-in, <code>gated</code> = redirected to sign-in (or 401/403),
+     <code>not found</code> = 404. Compare it against the page's configured rules.
+     A page tagged with a publishing state (such as <code>Draft</code>) is in a
+     state the site does not serve — if one of those answers <code>open</code>,
+     the state is not being enforced and is worth investigating.</p>
+  {pages_probe_summary}
   {pages_table}
   <h3>Web files <span class="count">{len(files)}</span></h3>
+  {files_probe_summary}
   {files_table}
-  <h3>Data endpoints <span class="count">{len(endpoint_rows)}</span></h3>
-  <p><code>confirmed leak</code> was read anonymously by the scanner;
-     <code>enabled</code> is switched on in the Web API site settings but not
-     (yet) confirmed leaking; <code>$metadata</code> discloses the schema.</p>
+  <h3>Data endpoints <span class="count">{endpoint_count}</span></h3>
+  <p>{endpoints_intro}</p>
   {endpoints_table}
 </section>"""
 
@@ -611,6 +714,7 @@ def render(report: Report) -> str:
         ("anonymous", "Anonymous access", None, _anonymous(report)),
         ("external", "External scan", None, _external(report)),
         ("rendered", "Where rendered", None, _references(report)),
+        ("published", "Published URLs", None, _published(report)),
         ("findings", "Findings", actionable or None, _findings(report)),
         ("configuration", "Configuration", None, _configuration(report)),
         ("documentation", "Documentation", None, _documentation()),
@@ -817,24 +921,19 @@ a:hover { text-decoration: underline; }
         max-width: 78ch; color: var(--fg-2); }
 /* Grouped by question rather than a flat run of values, with a rule between
    columns so the groups read as groups. */
-.meta { display: grid; gap: 10px 0; margin: 0;
-        grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); }
-.meta-group { padding: 0 26px; border-left: 1px solid var(--stroke-1); }
-.meta-group:first-child { padding-left: 0; border-left: 0; }
-.meta-group > h2 {
-  font-family: var(--font); font-size: 11px; line-height: 15px; margin: 0 0 8px;
-  text-transform: uppercase; letter-spacing: .09em; font-weight: 700;
-  color: var(--brand-70);
-}
-.meta-group > dl { margin: 0; display: grid; gap: 8px; }
+.meta { display: grid; gap: 14px 30px; margin: 18px 0 0; justify-content: start;
+        grid-template-columns: repeat(auto-fill, minmax(184px, 214px)); }
 .meta-item { min-width: 0; }
 .meta-item dt {
-  font-size: 11px; line-height: 15px; color: var(--fg-3); font-weight: 600;
+  font-size: 10.5px; line-height: 14px; margin: 0 0 3px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .07em; color: var(--brand-70);
 }
-.meta-item dd { margin: 2px 0 0; font-size: 14px; line-height: 19px;
-                overflow-wrap: anywhere; color: var(--fg-1); }
-.meta-note { display: block; font-size: 11px; line-height: 15px;
-             color: var(--fg-3); margin-top: 2px; }
+.meta-item dd { margin: 0; font-size: 13.5px; line-height: 18px; color: var(--fg-1);
+                white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.meta-item dd a, .meta-item dd code { max-width: 100%; }
+.meta-note { display: block; font-size: 11px; line-height: 15px; font-weight: 400;
+             color: var(--fg-3); margin-top: 2px;
+             white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .meta a { color: var(--brand-70); }
 .meta code { background: rgba(255,255,255,.75); border: 1px solid var(--stroke-2); }
 .meta time { border-bottom: 1px dotted var(--fg-3); cursor: help; }
@@ -933,6 +1032,26 @@ p { margin: 0 0 12px; color: var(--fg-2); max-width: 90ch; }
 }
 .action-list li:last-child { border-bottom: 0; }
 .act-title { font-weight: 600; color: var(--fg-1); }
+/* Is anything already limiting this? Read before the reader panics. */
+.mit {
+  display: inline-block; padding: 2px 10px; border-radius: var(--r-circular);
+  font-size: 12px; line-height: 16px; font-weight: 600; white-space: nowrap;
+  border: 1px solid;
+}
+.mit-ok { color: var(--ok); background: rgba(14,112,14,.10);
+          border-color: rgba(14,112,14,.35); }
+.mit-partial { color: var(--sev-medium); background: var(--sev-medium-bg);
+               border-color: var(--sev-medium-stroke); }
+.mit-open { color: var(--sev-critical); background: var(--sev-critical-bg);
+            border-color: var(--sev-critical-stroke); }
+.act-url { font-size: 12px; font-family: var(--mono); word-break: break-all;
+           flex-basis: 100%; }
+/* What bounds or confirms a finding: present, but never louder than the title. */
+.qual {
+  font-size: 11px; line-height: 16px; color: var(--fg-3);
+  background: var(--bg-muted); border: 1px solid var(--stroke-2);
+  border-radius: var(--r-circular); padding: 1px 8px; white-space: nowrap;
+}
 
 /* --- badges, pills, chips ----------------------------------------------- */
 .badge {
@@ -957,6 +1076,10 @@ p { margin: 0 0 12px; color: var(--fg-2); max-width: 90ch; }
 }
 .pill.danger { background: var(--sev-critical-bg); color: var(--sev-critical);
                border: 1px solid var(--sev-critical-stroke); }
+.pill.warn { background: var(--sev-medium-bg); color: var(--sev-medium);
+             border: 1px solid var(--sev-medium); }
+.pill.ok { background: rgba(14,112,14,.10); color: var(--ok);
+           border: 1px solid rgba(14,112,14,.35); }
 .flag { font-size: 12px; font-weight: 600; }
 .flag.on { color: var(--sev-critical); }
 .flag.off { color: var(--fg-3); }

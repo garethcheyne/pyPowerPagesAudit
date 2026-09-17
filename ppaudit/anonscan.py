@@ -9,7 +9,9 @@ This is the power-pwn Power Pages technique, reimplemented and extended:
 * reports how many rows are reachable (``$count``), not just yes/no;
 * on a table-permission error falls back to per-column probing to find
   partial column-level leaks;
-* runs probes concurrently with polite rate limiting and retries.
+* runs probes concurrently, with optional rate limiting for politeness. A probe
+  that never gets an answer is recorded as such rather than read as a pass:
+  where nothing answers at all, the scan says the target was untested.
 
 It authenticates nothing by default (the anonymous attacker's view). An
 optional cookie/bearer header lets you re-run it as an authenticated portal
@@ -62,6 +64,7 @@ class ProbeResult:
     exposed_columns: list[str] = field(default_factory=list)
     status: int | None = None
     error_code: str = ""
+    error: str = ""          # transport failure: the probe never got an answer
 
 
 class AnonScanner:
@@ -91,10 +94,17 @@ class AnonScanner:
 
     @staticmethod
     def normalize_url(url: str) -> str:
-        if not url.startswith("http"):
+        """Add a scheme if missing and drop a trailing slash. Nothing else.
+
+        The host is used exactly as given: a site is commonly served only under
+        ``www``, where dropping the label breaks TLS (the certificate and SNI
+        name no longer match) and every probe fails before it is even sent —
+        which reads as "nothing is exposed" rather than "nothing was tested".
+        """
+        url = url.strip()
+        if not url.lower().startswith(("http://", "https://")):
             url = "https://" + url
-        url = url.rstrip("/").replace("www.", "")
-        return url
+        return url.rstrip("/")
 
     # --- HTTP with rate limiting -------------------------------------------
 
@@ -168,7 +178,8 @@ class AnonScanner:
         res = ProbeResult(table=spec.name, surface=surface)
         try:
             resp = self._get(f"{base}{spec.name}?$top=1&$count=true")
-        except requests.RequestException:
+        except requests.RequestException as exc:
+            res.error = str(exc)
             return res
         res.status = resp.status_code
         if 200 <= resp.status_code < 300:
@@ -226,6 +237,26 @@ class AnonScanner:
         return report
 
     def _record(self, results: list[ProbeResult], report: Report) -> None:
+        answered = [r for r in results if r.status is not None]
+        report.context["scan_probes"] = len(results)
+        report.context["scan_unanswered"] = len(results) - len(answered)
+
+        # Nothing answered: the site was never tested, so silence here is not
+        # evidence of safety. Reporting it as a finding also makes the run fail
+        # a CI gate rather than passing it on an untested target.
+        if results and not answered:
+            reason = next((r.error for r in results if r.error), "no response")
+            report.add(Finding(
+                Severity.HIGH, "Anonymous scan could not reach the site",
+                detail=(f"All {len(results)} probes against {self.url} failed before "
+                        "any response was received, so nothing about the site's "
+                        "anonymous surface was established. This is an untested "
+                        f"target, not a clean one. First error: {reason}"),
+                source="anon",
+                evidence={"target": self.url, "probes_attempted": len(results)}))
+            report.context["anon_exposed_tables"] = []
+            return
+
         exposed_tables: set[str] = set()
         for r in results:
             if not r.reachable and not r.exposed_columns:
@@ -270,7 +301,19 @@ class AnonScanner:
         report.context["anon_exposed_tables"] = sorted(exposed_tables)
         if not exposed_tables and not any(
             f.severity >= Severity.HIGH for f in report.findings):
+            tables = len({r.table for r in results})
+            unanswered = len(results) - len(answered)
+            # Say what was covered: "nothing found" is only meaningful alongside
+            # how much was actually asked, and which probes never got an answer.
+            detail = (f"No table returned data to an unauthenticated caller. "
+                      f"{len(answered)} of {len(results)} probe(s) across {tables} "
+                      "table(s) were answered by the site, over both the /_odata "
+                      "feed and the /_api Web API surface.")
+            if unanswered:
+                detail += (f" {unanswered} probe(s) never got a response, so those "
+                           "endpoints are untested rather than confirmed closed.")
             report.add(Finding(
                 Severity.INFO, "No anonymously readable tables found",
-                detail="No table returned data to an unauthenticated caller.",
-                source="anon"))
+                detail=detail, source="anon",
+                evidence={"tables_probed": tables, "probes_answered": len(answered),
+                          "probes_unanswered": unanswered}))

@@ -91,6 +91,7 @@ CONFIG_SCHEMAS: dict[str, dict] = {
             "webform": "adx_webforms",
             "webformstep": "adx_webformsteps",
             "webfile": "adx_webfiles",
+            "publishingstate": "adx_publishingstates",
         },
         "nav": {
             "entitypermission_webrole": "adx_entitypermission_webrole",
@@ -122,6 +123,7 @@ CONFIG_SCHEMAS: dict[str, dict] = {
             "webform": "mspp_webforms",
             "webformstep": "mspp_webformsteps",
             "webfile": "mspp_webfiles",
+            "publishingstate": "mspp_publishingstates",
             # Enhanced sites use column *security* profiles instead of column
             # permissions; absent on standard sites, so the fetch is non-fatal.
             "columnsecurityprofile": "mspp_columnsecurityprofiles",
@@ -206,6 +208,10 @@ FIELD_CANDIDATES: dict[str, list[str]] = {
     "page_webform_ref": ["_{p}_webformid_value"],
     "page_isroot": ["{p}_isroot"],
     "page_rootpage_ref": ["_{p}_rootwebpageid_value"],
+    "page_language_ref": ["_{p}_webpagelanguageid_value"],
+    "page_language_label": ["_{p}_webpagelanguageid_value@OData.Community.Display.V1.FormattedValue"],
+    "page_publishingstate_ref": ["_{p}_publishingstateid_value"],
+    "page_publishingstate_label": ["_{p}_publishingstateid_value@OData.Community.Display.V1.FormattedValue"],
     # web template (Liquid source)
     "template_id": ["{p}_webtemplateid"],
     "template_name": ["{p}_name"],
@@ -224,6 +230,14 @@ FIELD_CANDIDATES: dict[str, list[str]] = {
     "file_name": ["{p}_name"],
     "file_partialurl": ["{p}_partialurl"],
     "file_parentpage": ["_{p}_parentpageid_value"],
+    "file_publishingstate_ref": ["_{p}_publishingstateid_value"],
+    "file_publishingstate_label": ["_{p}_publishingstateid_value@OData.Community.Display.V1.FormattedValue"],
+    # publishing state. Draft content is not served to ordinary visitors, and
+    # states are renameable, so visibility must come from the flag, not the name.
+    "pubstate_id": ["{p}_publishingstateid"],
+    "pubstate_name": ["{p}_name"],
+    "pubstate_visible": ["{p}_isvisible"],
+    "pubstate_default": ["{p}_isdefault"],
     # column security profile (enhanced model)
     "csp_id": ["{p}_columnsecurityprofileid"],
     "csp_name": ["{p}_name"],
@@ -292,39 +306,49 @@ SECURITY_SETTING_PREFIXES = [
 ]
 
 # Settings whose *value* is worth judging, not merely listing.
-# lowercased name -> (values considered risky, why it matters)
-NOTABLE_SETTINGS: dict[str, tuple[set[str], str]] = {
+# lowercased name -> (values considered risky, why it matters, the consequence in
+# a few words). The short form goes on the summary line: several of these
+# findings share one title, and a reader should not have to open each to learn
+# which setting is at fault and what it costs.
+NOTABLE_SETTINGS: dict[str, tuple[set[str], str, str]] = {
     "authentication/registration/openregistrationenabled": (
         {"true"},
         "Anyone on the internet can self-register a portal account. Combined with "
         "anything granted to the Authenticated Users role, that data is effectively "
         "public.",
+        "anyone can self-register",
     ),
     "authentication/registration/localloginenabled": (
         {"true"},
         "Local username/password sign-in is enabled alongside federated login.",
+        "local passwords accepted",
     ),
     "authentication/registration/externalloginenabled": (
         {"true"},
         "External identity providers can be used to register.",
+        "external identity providers can register",
     ),
     "authentication/registration/requiresconfirmation": (
         {"false"},
         "Registration does not require email confirmation, so accounts can be created "
         "against addresses the registrant does not control.",
+        "email addresses go unverified",
     ),
     "authentication/registration/captchaenabled": (
         {"false"},
         "Registration is not CAPTCHA-protected; bulk automated account creation is "
         "possible.",
+        "no CAPTCHA on registration",
     ),
     "portaltracing/enabled": (
         {"true"},
         "Portal tracing is on. Diagnostic output can disclose internal detail.",
+        "diagnostics may disclose internals",
     ),
     "site/enabledefaulthtmlencoding": (
         {"false"},
         "Default HTML encoding is disabled, raising stored-XSS risk in Liquid output.",
+        "stored-XSS risk in Liquid output",
     ),
 }
 

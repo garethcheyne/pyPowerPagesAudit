@@ -43,11 +43,11 @@ def permission(name, table, scope, *, read=True, write=False, create=False,
 
 
 def page(pid, name, partial, *, parent="", copy="", js="", template_id="",
-         list_id="", form_id=""):
+         list_id="", form_id="", **kw):
     return WebPage(id=pid, name=name, partial_url=partial, parent_id=parent,
                    copy=copy, custom_js=js, page_template_id=template_id,
                    entity_list_id=list_id, entity_form_id=form_id,
-                   website_id="site-1")
+                   website_id="site-1", **kw)
 
 
 def rule(name, page_id, right="Restrict Read", roles=()):
